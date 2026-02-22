@@ -5,6 +5,7 @@ import { db } from "../db/prisma.js";
 import { AuthenticationError } from "../utils/errors.js";
 import { sendOtpEmail } from "../utils/email.js";
 import { DEFAULT_POLICY, AgentPolicy } from "../policy/types.js";
+import { registerHeliusWebhook } from "../utils/helius.js";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
@@ -154,6 +155,19 @@ export async function completeOtpFlow(
     });
 
     logger.info("New user created", { email, subOrgId, solanaAddress });
+
+    // Register webhook with Helius for incoming deposit tracking
+    try {
+      await registerHeliusWebhook(solanaAddress);
+      logger.info("Helius webhook registered for new agent", { email, solanaAddress });
+    } catch (err) {
+      logger.error("Failed to register Helius webhook", {
+        email,
+        solanaAddress,
+        error: String(err),
+      });
+      // Don't throw - webhook registration failure shouldn't block user creation
+    }
   }
 
   // Get agent's policy for session expiration (or use default)

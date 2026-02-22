@@ -17,6 +17,9 @@ export const config = cleanEnv(process.env, {
   SOLANA_NETWORK: str({ choices: ["mainnet-beta", "devnet"], default: "mainnet-beta" }),
   SOLANA_RPC_URL: str({ default: "" }),
 
+  // Helius Webhooks
+  HELIUS_WEBHOOK_SECRET: str(),
+
   // Jupiter
   JUPITER_API_KEY: str(),
 

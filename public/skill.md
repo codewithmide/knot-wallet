@@ -64,6 +64,12 @@ Query params: limit (default 50, max 100), offset (default 0), action (optional 
 Returns: { transactions, pagination }
 Example: GET /wallets/me/history?limit=20&action=trade
 
+**Automatic Deposit Tracking**
+All incoming deposits (SOL transfers, SPL token transfers) are automatically detected
+and logged via Helius webhooks. When someone sends you tokens, it's automatically
+recorded in your transaction history with the action `deposit`. No polling or manual
+intervention needed — deposits appear in real-time.
+
 ### Transfer SOL
 POST /wallets/me/actions/transfer-solana
 Body: { "to": "<address>", "amount": 0.1, "asset": "sol" }

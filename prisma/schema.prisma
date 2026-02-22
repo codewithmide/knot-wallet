@@ -33,10 +33,11 @@ model AuditLog {
   id        String   @id @default(uuid())
   agentId   String
   agent     Agent    @relation(fields: [agentId], references: [id])
-  action    String   // "transfer", "trade", "sign_message", etc.
+  action    String   // "transfer", "trade", "sign_message", "deposit", etc.
   asset     String?  // "sol", "usdc", etc.
   amount    Float?
-  to        String?
+  from      String?  // Source address (for deposits/transfers)
+  to        String?  // Destination address
   signature String?
   status    String   // "confirmed", "failed", "rejected_by_policy"
   metadata  Json?    // extra context (e.g. Jupiter quote details)

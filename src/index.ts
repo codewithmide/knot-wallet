@@ -7,6 +7,7 @@ import { connect } from "./routes/connect.js";
 import { actions } from "./routes/actions.js";
 import { policyRoutes } from "./routes/policy.js";
 import { tokens } from "./routes/tokens.js";
+import { webhooks } from "./routes/webhooks.js";
 import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { AppError } from "./utils/errors.js";
@@ -41,6 +42,7 @@ app.route("/connect", connect);
 app.route("/wallets/me", actions);
 app.route("/wallets/me/policy", policyRoutes);
 app.route("/tokens", tokens);
+app.route("/webhooks", webhooks);
 
 // 404 handler
 app.notFound((c) => error(c, "Resource not found.", 404));
