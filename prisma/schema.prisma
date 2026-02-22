@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Agent {
+  id               String   @id @default(uuid())
+  email            String   @unique
+  username         String   @unique @default(cuid())
+  turnkeySubOrgId  String   @unique  // Turnkey sub-organization ID
+  turnkeyWalletId  String   @unique  // Turnkey wallet ID
+  solanaAddress    String   @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  policy    AgentPolicy?
+  auditLogs AuditLog[]
+}
+
+model AgentPolicy {
+  id        String   @id @default(uuid())
+  agentId   String   @unique
+  agent     Agent    @relation(fields: [agentId], references: [id])
+  rules     Json     // AgentPolicy object stored as JSON
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id])
+  action    String   // "transfer", "trade", "sign_message", etc.
+  asset     String?  // "sol", "usdc", etc.
+  amount    Float?
+  to        String?
+  signature String?
+  status    String   // "confirmed", "failed", "rejected_by_policy"
+  metadata  Json?    // extra context (e.g. Jupiter quote details)
+  createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+  @@index([agentId, asset, status])
+}

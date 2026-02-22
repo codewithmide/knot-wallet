@@ -1,0 +1,46 @@
+import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import { authMiddleware } from "../auth/middleware.js";
+import { getAgentPolicy, updateAgentPolicy } from "../policy/engine.js";
+import { success } from "../utils/response.js";
+
+const policyRoutes = new Hono();
+
+// All policy routes require authentication
+policyRoutes.use("*", authMiddleware);
+
+// GET /wallets/me/policy
+policyRoutes.get("/", async (c) => {
+  const agent = c.get("agent");
+  const policy = await getAgentPolicy(agent.id);
+  return success(c, "Policy retrieved successfully.", { policy });
+});
+
+// PATCH /wallets/me/policy
+policyRoutes.patch(
+  "/",
+  zValidator(
+    "json",
+    z.object({
+      maxSingleTransferSol: z.number().positive().optional(),
+      maxSingleTransferUsdc: z.number().positive().optional(),
+      dailyLimitSol: z.number().positive().optional(),
+      dailyLimitUsdc: z.number().positive().optional(),
+      allowedRecipients: z.array(z.string()).optional(),
+      allowedPrograms: z.array(z.string()).optional(),
+      allowTrading: z.boolean().optional(),
+      allowExternalSigning: z.boolean().optional(),
+      sessionExpirationHours: z.number().int().min(1).max(8760).optional(), // 1 hour to 1 year
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const updates = c.req.valid("json");
+
+    const policy = await updateAgentPolicy(agent.id, updates);
+    return success(c, "Policy updated successfully.", { policy });
+  }
+);
+
+export { policyRoutes };

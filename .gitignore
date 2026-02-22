@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Test coverage
+coverage/
+# Migration scripts (contain sensitive operations)
+scripts/migrate-withdraw-funds.ts
+scripts/delete-agent.ts
+
+API_TESTING.md
+claude.md
+openapi.yaml
