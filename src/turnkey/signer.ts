@@ -74,6 +74,35 @@ export async function signAndBroadcast(
 }
 
 /**
+ * Sign a transaction using Turnkey but DON'T broadcast.
+ * Returns base64-encoded signed transaction.
+ * Use this for services like Jupiter Ultra that handle their own broadcasting.
+ *
+ * @param organizationId - The Turnkey sub-organization ID for this wallet
+ */
+export async function signTransaction(
+  transaction: VersionedTransaction,
+  signerAddress: string,
+  organizationId: string
+): Promise<string> {
+  logger.debug("Signing transaction (no broadcast)", { signerAddress, organizationId });
+
+  const turnkeySigner = new TurnkeySigner({
+    organizationId,
+    client: turnkeyDelegatedClient,
+  });
+
+  // Signing happens server-side in Turnkey's TEE
+  await turnkeySigner.addSignature(transaction, signerAddress);
+
+  // Return base64-encoded signed transaction
+  const signedTx = Buffer.from(transaction.serialize()).toString("base64");
+  logger.debug("Transaction signed", { signerAddress });
+
+  return signedTx;
+}
+
+/**
  * Sign a raw message (e.g. for Sign In With Solana, identity proofs).
  * Returns hex-encoded signature.
  *

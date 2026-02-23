@@ -4,13 +4,8 @@ import { z } from "zod";
 import { authMiddleware } from "../auth/middleware.js";
 import { transferSOL, transferSPLToken } from "../actions/transfer.js";
 import { trade } from "../actions/trade.js";
-import { signMessage, devnetConnection } from "../turnkey/signer.js";
-import { signExternalTransaction } from "../actions/simulate.js";
 import { getBalances } from "../utils/balances.js";
 import { exportWalletPrivateKey, exportWalletSeedPhrase } from "../actions/export.js";
-import { simulateTransaction } from "../turnkey/signer.js";
-import { VersionedTransaction, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { config } from "../config.js";
 import { db } from "../db/prisma.js";
 import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
@@ -152,98 +147,6 @@ actions.post(
     return success(c, "Trade executed successfully.", result);
   }
 );
-
-// POST /wallets/me/actions/sign-message
-actions.post(
-  "/actions/sign-message",
-  zValidator("json", z.object({ message: z.string().min(1) })),
-  async (c) => {
-    const agent = c.get("agent");
-    const { message } = c.req.valid("json");
-
-    const signature = await signMessage(message, agent.solanaAddress, agent.turnkeySubOrgId);
-
-    // Log message signing
-    await db.auditLog.create({
-      data: {
-        agentId: agent.id,
-        action: "sign_message",
-        status: "confirmed",
-        metadata: { messageLength: message.length },
-      },
-    });
-
-    return success(c, "Message signed successfully.", {
-      signature,
-      signerAddress: agent.solanaAddress,
-    });
-  }
-);
-
-// POST /wallets/me/actions/sign-tx
-// For when an external protocol sends a transaction for the agent to sign
-actions.post(
-  "/actions/sign-tx",
-  zValidator(
-    "json",
-    z.object({
-      transaction: z.string(), // base64 serialized VersionedTransaction
-    })
-  ),
-  async (c) => {
-    const agent = c.get("agent");
-    const { transaction } = c.req.valid("json");
-
-    const result = await signExternalTransaction(
-      transaction,
-      agent.solanaAddress,
-      agent.id,
-      agent.turnkeySubOrgId
-    );
-
-    return success(c, "Transaction signed and broadcast successfully.", result);
-  }
-);
-
-// POST /wallets/me/actions/simulate
-// Dry-run: understand a transaction without signing
-actions.post(
-  "/actions/simulate",
-  zValidator("json", z.object({ transaction: z.string() })),
-  async (c) => {
-    const { transaction } = c.req.valid("json");
-    const txBytes = Buffer.from(transaction, "base64");
-    const tx = VersionedTransaction.deserialize(txBytes);
-
-    const result = await simulateTransaction(tx);
-
-    if (result.success) {
-      return success(c, "Transaction simulation completed.", result);
-    } else {
-      return error(c, "Transaction simulation failed.", 400, result);
-    }
-  }
-);
-
-// POST /wallets/me/actions/faucet-sol
-// Devnet only — request test SOL
-actions.post("/actions/faucet-sol", async (c) => {
-  const agent = c.get("agent");
-
-  if (config.SOLANA_NETWORK !== "devnet") {
-    return error(c, "Faucet only available on devnet.", 400);
-  }
-
-  const sig = await devnetConnection.requestAirdrop(
-    new PublicKey(agent.solanaAddress),
-    0.1 * LAMPORTS_PER_SOL
-  );
-
-  return success(c, "Airdrop requested successfully.", {
-    signature: sig,
-    amount: "0.1 SOL (devnet)",
-  });
-});
 
 // POST /wallets/me/actions/export-private-key
 // Export the Solana private key for this wallet

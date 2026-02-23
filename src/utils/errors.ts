@@ -58,6 +58,13 @@ export class TransactionError extends AppError {
   }
 }
 
+export class TradeError extends AppError {
+  constructor(message: string, statusCode: number = 400) {
+    super(message, statusCode, "TRADE_ERROR");
+    this.name = "TradeError";
+  }
+}
+
 export const errorToResponse = (error: unknown): { message: string; code?: string; statusCode: number } => {
   if (error instanceof AppError) {
     return {
