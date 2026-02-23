@@ -1,6 +1,5 @@
 import { config } from "../config.js";
 import { logger } from "./logger.js";
-import crypto from "crypto";
 
 export interface HeliusWebhookPayload {
   webhookID: string;
@@ -94,8 +93,8 @@ export async function registerHeliusWebhook(walletAddress: string): Promise<stri
       throw new Error(`Helius webhook registration failed: ${response.status} ${errorData}`);
     }
 
-    const data = (await response.json()) as { result: { webhookID: string } };
-    const webhookId = data.result.webhookID;
+    const data = (await response.json()) as { webhookID: string };
+    const webhookId = data.webhookID;
 
     logger.info("Helius webhook registered successfully", { walletAddress, webhookId });
 
@@ -108,35 +107,22 @@ export async function registerHeliusWebhook(walletAddress: string): Promise<stri
 
 /**
  * Verify the authenticity of a Helius webhook request
- * Helius signs requests with a SHA256 HMAC using your webhook secret
+ * Helius sends the authHeader value in the Authorization header
  */
-export function verifyHeliusWebhookSignature(
-  payload: string,
-  signature: string | undefined
-): boolean {
-  if (!signature) {
-    logger.warn("No signature provided in webhook request");
+export function verifyHeliusWebhookAuth(authHeader: string | undefined): boolean {
+  if (!authHeader) {
+    logger.warn("No Authorization header in webhook request");
     return false;
   }
 
-  try {
-    // Create HMAC-SHA256 hash of the payload using the webhook secret
-    const expectedSignature = crypto
-      .createHmac("sha256", config.HELIUS_WEBHOOK_SECRET)
-      .update(payload)
-      .digest("hex");
-
-    // Compare signatures (constant-time comparison to prevent timing attacks)
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(expectedSignature),
-      Buffer.from(signature)
-    );
-
-    return isValid;
-  } catch (err) {
-    logger.error("Error verifying webhook signature", { error: String(err) });
-    return false;
+  // Helius sends the authHeader value directly in Authorization header
+  const isValid = authHeader === config.HELIUS_WEBHOOK_SECRET;
+  
+  if (!isValid) {
+    logger.warn("Invalid webhook auth header");
   }
+  
+  return isValid;
 }
 
 /**

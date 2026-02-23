@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { verifyHeliusWebhookSignature, parseIncomingDeposit, HeliusWebhookPayload } from "../utils/helius.js";
+import { verifyHeliusWebhookAuth, parseIncomingDeposit, HeliusWebhookPayload } from "../utils/helius.js";
 import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { success, error } from "../utils/response.js";
@@ -9,28 +9,30 @@ const webhooks = new Hono();
 /**
  * POST /webhooks/helius
  * Receives webhook notifications from Helius for wallet transactions
- * Verifies signature and logs incoming deposits
+ * Verifies auth header and logs incoming deposits
  */
 webhooks.post("/helius", async (c) => {
+  logger.info("Webhook endpoint hit!");
+  
   try {
-    // Get the raw body for signature verification
+    // Get the raw body for parsing
     const rawBody = await c.req.text();
+    logger.info("Webhook payload received", { bodyLength: rawBody.length });
 
-    // Get the signature from the header
-    const signature = c.req.header("X-HELIUS-SIGNATURE");
+    // Get the Authorization header (Helius sends authHeader value here)
+    const authHeader = c.req.header("Authorization");
+    logger.info("Webhook auth check", { hasAuth: !!authHeader });
 
-    // Verify webhook signature
-    if (!verifyHeliusWebhookSignature(rawBody, signature)) {
-      logger.warn("Invalid webhook signature received", {
-        signature: signature?.substring(0, 20) + "...",
-      });
+    // Verify auth header matches our secret
+    if (!verifyHeliusWebhookAuth(authHeader)) {
+      logger.warn("Invalid webhook auth header received");
       return error(c, "Invalid webhook signature", 401);
     }
 
     // Parse the payload
     const payload = JSON.parse(rawBody) as HeliusWebhookPayload;
 
-    logger.debug("Webhook received", {
+    logger.info("Webhook received", {
       wallet: payload.wallet,
       transactionType: payload.transactionType,
     });
