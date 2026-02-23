@@ -4,9 +4,9 @@
   "description": "Solana Agent Wallet - Server-side wallet infrastructure for AI agents",
   "main": "dist/index.js",
   "scripts": {
-    "prestart": "prisma generate",
+    "prestart": "prisma generate && prisma db push",
     "dev": "tsx watch src/index.ts",
-    "build": "prisma generate && tsc",
+    "build": "tsc",
     "start": "node dist/index.js",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
