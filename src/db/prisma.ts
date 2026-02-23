@@ -4,9 +4,12 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-// Create connection pool
+// Create connection pool with SSL config for DigitalOcean
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Accept DigitalOcean's self-signed cert
+  },
 });
 
 // Create Prisma adapter

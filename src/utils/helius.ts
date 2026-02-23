@@ -70,7 +70,8 @@ export async function registerHeliusWebhook(walletAddress: string): Promise<stri
   try {
     logger.info("Registering Helius webhook", { walletAddress, webhookUrl });
 
-    const response = await fetch("https://api.helius.xyz/v0/webhooks", {
+    // Helius requires API key as query parameter
+    const response = await fetch(`https://api.helius.xyz/v0/webhooks?api-key=${config.HELIUS_API_KEY}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
