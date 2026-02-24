@@ -4,14 +4,13 @@ import { PolicyError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
 export interface PolicyRequest {
-  type: "transfer" | "trade" | "external_sign";
+  type: "transfer" | "trade";
   asset?: "sol" | "usdc" | "spl"; // "spl" for other SPL tokens
   amount?: number;
   to?: string;
   mint?: string; // mint address for SPL tokens
   fromMint?: string;
   toMint?: string;
-  logs?: string[] | null;
 }
 
 /**
@@ -28,14 +27,6 @@ export async function checkPolicy(
     : DEFAULT_POLICY;
 
   logger.debug("Checking policy", { agentId, request, policy });
-
-  // External signing check
-  if (request.type === "external_sign" && !policy.allowExternalSigning) {
-    throw new PolicyError(
-      "External transaction signing is not enabled for this agent. " +
-      "Update your policy to enable it."
-    );
-  }
 
   // Trading check
   if (request.type === "trade" && !policy.allowTrading) {
@@ -62,12 +53,6 @@ export async function checkPolicy(
         `of ${policy.maxSingleTransferSol} SOL.`
       );
     }
-    if (asset === "usdc" && amount > policy.maxSingleTransferUsdc) {
-      throw new PolicyError(
-        `Transfer of ${amount} USDC exceeds single transfer limit ` +
-        `of ${policy.maxSingleTransferUsdc} USDC.`
-      );
-    }
 
     // Daily rolling limit (read from audit log)
     const dailySpent = await getDailySpent(agentId, asset!);
@@ -76,12 +61,6 @@ export async function checkPolicy(
       throw new PolicyError(
         `Transfer would exceed daily SOL limit of ${policy.dailyLimitSol}. ` +
         `Already spent: ${dailySpent} SOL today.`
-      );
-    }
-    if (asset === "usdc" && dailySpent + amount > policy.dailyLimitUsdc) {
-      throw new PolicyError(
-        `Transfer would exceed daily USDC limit of ${policy.dailyLimitUsdc}. ` +
-        `Already spent: ${dailySpent} USDC today.`
       );
     }
   }

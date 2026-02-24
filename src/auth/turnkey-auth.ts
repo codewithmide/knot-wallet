@@ -6,6 +6,7 @@ import { AuthenticationError } from "../utils/errors.js";
 import { sendOtpEmail } from "../utils/email.js";
 import { DEFAULT_POLICY, AgentPolicy } from "../policy/types.js";
 import { registerHeliusWebhook } from "../utils/helius.js";
+import { incrementTotalAgents } from "../utils/stats-cache.js";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
@@ -153,6 +154,8 @@ export async function completeOtpFlow(
         solanaAddress,
       },
     });
+
+    await incrementTotalAgents();
 
     logger.info("New user created", { email, subOrgId, solanaAddress });
 

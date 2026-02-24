@@ -17,9 +17,9 @@ import {
 } from "@solana/spl-token";
 import { connection, signAndBroadcast } from "../turnkey/signer.js";
 import { checkPolicy } from "../policy/engine.js";
-import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { InsufficientFundsError } from "../utils/errors.js";
+import { createAuditLog } from "../utils/audit.js";
 
 export interface TransferResult {
   signature: string;
@@ -81,31 +81,27 @@ export async function transferSOL(
   } catch (error) {
     status = "failed";
     // Log the failed attempt
-    await db.auditLog.create({
-      data: {
-        agentId,
-        action: "transfer",
-        asset: "sol",
-        amount: amountSol,
-        to: toAddress,
-        status,
-        metadata: { error: String(error) },
-      },
-    });
-    throw error;
-  }
-
-  // Log successful transfer
-  await db.auditLog.create({
-    data: {
+    await createAuditLog({
       agentId,
       action: "transfer",
       asset: "sol",
       amount: amountSol,
       to: toAddress,
-      signature,
       status,
-    },
+      metadata: { error: String(error) },
+    });
+    throw error;
+  }
+
+  // Log successful transfer
+  await createAuditLog({
+    agentId,
+    action: "transfer",
+    asset: "sol",
+    amount: amountSol,
+    to: toAddress,
+    signature,
+    status,
   });
 
   logger.info("SOL transfer completed", { signature, amountSol, toAddress });
@@ -254,31 +250,27 @@ export async function transferSPLToken(
     signature = await signAndBroadcast(transaction, fromAddress, subOrgId);
   } catch (error) {
     status = "failed";
-    await db.auditLog.create({
-      data: {
-        agentId,
-        action: "transfer",
-        asset: mintAddress,
-        amount,
-        to: toAddress,
-        status,
-        metadata: { error: String(error), mint: mintAddress },
-      },
-    });
-    throw error;
-  }
-
-  await db.auditLog.create({
-    data: {
+    await createAuditLog({
       agentId,
       action: "transfer",
       asset: mintAddress,
       amount,
       to: toAddress,
-      signature,
       status,
-      metadata: { mint: mintAddress, decimals },
-    },
+      metadata: { error: String(error), mint: mintAddress },
+    });
+    throw error;
+  }
+
+  await createAuditLog({
+    agentId,
+    action: "transfer",
+    asset: mintAddress,
+    amount,
+    to: toAddress,
+    signature,
+    status,
+    metadata: { mint: mintAddress, decimals },
   });
 
   logger.info("SPL token transfer completed", {

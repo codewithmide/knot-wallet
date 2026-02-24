@@ -2,11 +2,11 @@ import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { getMint } from "@solana/spl-token";
 import { connection, signTransaction } from "../turnkey/signer.js";
 import { checkPolicy } from "../policy/engine.js";
-import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { TradeError, InsufficientFundsError } from "../utils/errors.js";
 import { resolveTokenMint, TOKEN_DIRECTORY } from "../utils/tokens.js";
 import { config } from "../config.js";
+import { createAuditLog } from "../utils/audit.js";
 
 // Jupiter Ultra API (RPC-less, handles everything)
 const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
@@ -173,24 +173,22 @@ export async function trade(
   ).toFixed(6);
 
   // Log successful trade
-  await db.auditLog.create({
-    data: {
-      agentId,
-      action: "trade",
-      asset: fromResolved.symbol,
-      amount,
-      to: toResolved.symbol,
-      signature,
-      status: "confirmed",
-      metadata: {
-        inputMint,
-        outputMint,
-        outputAmount: parseFloat(outputAmount),
-        priceImpact: orderResponse.priceImpact || orderResponse.priceImpactPct,
-        router: orderResponse.router,
-        gasless: orderResponse.gasless,
-        route: orderResponse.routePlan?.map((r: { swapInfo: { label: string } }) => r.swapInfo?.label),
-      },
+  await createAuditLog({
+    agentId,
+    action: "trade",
+    asset: fromResolved.symbol,
+    amount,
+    to: toResolved.symbol,
+    signature,
+    status: "confirmed",
+    metadata: {
+      inputMint,
+      outputMint,
+      outputAmount: parseFloat(outputAmount),
+      priceImpact: orderResponse.priceImpact || orderResponse.priceImpactPct,
+      router: orderResponse.router,
+      gasless: orderResponse.gasless,
+      route: orderResponse.routePlan?.map((r: { swapInfo: { label: string } }) => r.swapInfo?.label),
     },
   });
 
@@ -217,19 +215,17 @@ async function logTradeError(
   outputMint: string,
   error: unknown
 ): Promise<void> {
-  await db.auditLog.create({
-    data: {
-      agentId,
-      action: "trade",
-      asset: fromSymbol,
-      amount,
-      to: toSymbol,
-      status: "failed",
-      metadata: {
-        inputMint,
-        outputMint,
-        error: String(error),
-      },
+  await createAuditLog({
+    agentId,
+    action: "trade",
+    asset: fromSymbol,
+    amount,
+    to: toSymbol,
+    status: "failed",
+    metadata: {
+      inputMint,
+      outputMint,
+      error: String(error),
     },
   });
 }

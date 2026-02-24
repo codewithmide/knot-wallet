@@ -1,9 +1,8 @@
 import { VersionedTransaction } from "@solana/web3.js";
 import { simulateTransaction, signAndBroadcast } from "../turnkey/signer.js";
-import { checkPolicy } from "../policy/engine.js";
-import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { TransactionError } from "../utils/errors.js";
+import { createAuditLog } from "../utils/audit.js";
 
 /**
  * Sign and broadcast a transaction that was handed to the agent
@@ -42,15 +41,13 @@ export async function signExternalTransaction(
       reason: suspicious.reason,
     });
 
-    await db.auditLog.create({
-      data: {
-        agentId,
-        action: "external_sign",
-        status: "rejected_by_policy",
-        metadata: {
-          reason: suspicious.reason,
-          logs: simulation.logs,
-        },
+    await createAuditLog({
+      agentId,
+      action: "external_sign",
+      status: "rejected_by_policy",
+      metadata: {
+        reason: suspicious.reason,
+        logs: simulation.logs,
       },
     });
 
@@ -59,33 +56,26 @@ export async function signExternalTransaction(
     );
   }
 
-  // Policy check on the parsed transaction
-  await checkPolicy(agentId, { type: "external_sign", logs: simulation.logs });
-
   let signature: string;
 
   try {
     signature = await signAndBroadcast(transaction, signerAddress, subOrgId);
   } catch (error) {
-    await db.auditLog.create({
-      data: {
-        agentId,
-        action: "external_sign",
-        status: "failed",
-        metadata: { error: String(error) },
-      },
+    await createAuditLog({
+      agentId,
+      action: "external_sign",
+      status: "failed",
+      metadata: { error: String(error) },
     });
     throw error;
   }
 
-  await db.auditLog.create({
-    data: {
-      agentId,
-      action: "external_sign",
-      signature,
-      status: "confirmed",
-      metadata: { logs: simulation.logs },
-    },
+  await createAuditLog({
+    agentId,
+    action: "external_sign",
+    signature,
+    status: "confirmed",
+    metadata: { logs: simulation.logs },
   });
 
   logger.info("External transaction signed and broadcast", {

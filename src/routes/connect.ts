@@ -7,6 +7,7 @@ import { db } from "../db/prisma.js";
 import { DEFAULT_POLICY, AgentPolicy } from "../policy/types.js";
 import { config } from "../config.js";
 import { success, error } from "../utils/response.js";
+import { AppError } from "../utils/errors.js";
 import jwt from "jsonwebtoken";
 
 const connect = new Hono();
@@ -69,8 +70,9 @@ connect.post(
     } catch (err) {
       logger.error("Failed to complete OTP flow", { email, error: String(err) });
 
-      if (err instanceof Error && err.message.includes("Invalid")) {
-        return error(c, "Invalid or expired OTP.", 401);
+      // Handle AppError types (AuthenticationError, ValidationError, etc.)
+      if (err instanceof AppError) {
+        return error(c, err.message, err.statusCode);
       }
 
       return error(c, "Authentication failed. Please try again.", 500);

@@ -9,6 +9,7 @@ import { exportWalletPrivateKey, exportWalletSeedPhrase } from "../actions/expor
 import { db } from "../db/prisma.js";
 import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
+import { createAuditLog } from "../utils/audit.js";
 
 const actions = new Hono();
 
@@ -159,13 +160,11 @@ actions.post("/actions/export-private-key", async (c) => {
   );
 
   // Log the export action
-  await db.auditLog.create({
-    data: {
-      agentId: agent.id,
-      action: "export_private_key",
-      status: "confirmed",
-      metadata: { address: agent.solanaAddress },
-    },
+  await createAuditLog({
+    agentId: agent.id,
+    action: "export_private_key",
+    status: "confirmed",
+    metadata: { address: agent.solanaAddress },
   });
 
   return success(c, "Private key exported successfully. Keep it secure.", {
@@ -185,13 +184,11 @@ actions.post("/actions/export-seed-phrase", async (c) => {
   );
 
   // Log the export action
-  await db.auditLog.create({
-    data: {
-      agentId: agent.id,
-      action: "export_seed_phrase",
-      status: "confirmed",
-      metadata: { walletId: agent.turnkeyWalletId },
-    },
+  await createAuditLog({
+    agentId: agent.id,
+    action: "export_seed_phrase",
+    status: "confirmed",
+    metadata: { walletId: agent.turnkeyWalletId },
   });
 
   return success(c, "Seed phrase exported successfully. Keep it secure.", {

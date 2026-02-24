@@ -24,13 +24,9 @@ policyRoutes.patch(
     "json",
     z.object({
       maxSingleTransferSol: z.number().positive().optional(),
-      maxSingleTransferUsdc: z.number().positive().optional(),
       dailyLimitSol: z.number().positive().optional(),
-      dailyLimitUsdc: z.number().positive().optional(),
       allowedRecipients: z.array(z.string()).optional(),
-      allowedPrograms: z.array(z.string()).optional(),
       allowTrading: z.boolean().optional(),
-      allowExternalSigning: z.boolean().optional(),
       sessionExpirationHours: z.number().int().min(1).max(8760).optional(), // 1 hour to 1 year
     })
   ),

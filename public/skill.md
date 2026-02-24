@@ -2,13 +2,13 @@
 name: knot
 version: 1.0.0
 description: Solana Agent Wallet. Holds SOL and SPL tokens, signs transactions, trades on Jupiter. Server-side keys via Turnkey TEE.
-homepage: https://knot.dev
+homepage: https://useknot.xyz
 metadata:
   category: finance
   chains: [solana]
   networks: [mainnet-beta, devnet]
   tokens: [SOL, USDC, USDT]
-  api_base: https://api.knot.dev
+  api_base: https://api.useknot.xyz
 ---
 
 # Knot — Solana Agent Wallet
@@ -71,32 +71,19 @@ recorded in your transaction history with the action `deposit`. No polling or ma
 intervention needed — deposits appear in real-time.
 
 ### Transfer SOL
-POST /wallets/me/actions/transfer-solana
-Body: { "to": "<address>", "amount": 0.1, "asset": "sol" }
+POST /wallets/me/actions/transfer
+Body: { "to": "<address>", "amount": 0.1 }
 
-### Transfer USDC
-POST /wallets/me/actions/transfer-solana
-Body: { "to": "<address>", "amount": 10, "asset": "usdc" }
+### Transfer SPL Token (USDC, etc.)
+POST /wallets/me/actions/transfer
+Body: { "to": "<address>", "amount": 10, "mint": "USDC" }
+Note: `mint` can be a symbol (USDC, USDT, JUP) or mint address. Omit for native SOL.
 
-### Trade Tokens (via Jupiter)
+### Trade Tokens (via Jupiter Ultra)
 POST /wallets/me/actions/trade
 Body: { "from": "USDC", "to": "SOL", "amount": 10, "slippageBps": 50 }
 Symbols supported: SOL, USDC, USDT, JUP, BONK — or use any mint address.
-
-### Sign a Message
-POST /wallets/me/actions/sign-message
-Body: { "message": "Sign in to Protocol XYZ at 2026-01-01..." }
-Returns: { "signature": "..." }
-
-### Sign External Transaction
-POST /wallets/me/actions/sign-tx
-Body: { "transaction": "<base64 serialized VersionedTransaction>" }
-Note: Transaction is simulated before signing. Suspicious patterns are rejected.
-
-### Simulate (Dry Run)
-POST /wallets/me/actions/simulate
-Body: { "transaction": "<base64>" }
-Returns: { success, logs, error }
+Note: Jupiter handles routing, MEV protection, and transaction landing.
 
 ### Token Info Lookup
 GET /tokens/:query
@@ -110,21 +97,24 @@ GET  /wallets/me/policy
 PATCH /wallets/me/policy
 Body: { "maxSingleTransferSol": 1, "dailyLimitSol": 5, ... }
 
-### Devnet Faucet
-POST /wallets/me/actions/faucet-sol
-Note: Only available when running on devnet.
+### Export Private Key
+POST /wallets/me/actions/export-private-key
+Returns: { privateKey, address }
+⚠️ Handle with extreme care! Never share or log the private key.
+
+### Export Seed Phrase
+POST /wallets/me/actions/export-seed-phrase
+Returns: { seedPhrase }
+⚠️ Handle with extreme care! Never share or log the seed phrase.
 
 ## Policy Options
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | maxSingleTransferSol | number | 1 | Max SOL per transaction |
-| maxSingleTransferUsdc | number | 100 | Max USDC per transaction |
 | dailyLimitSol | number | 5 | Rolling 24h SOL limit |
-| dailyLimitUsdc | number | 500 | Rolling 24h USDC limit |
 | allowedRecipients | string[] | [] | Recipient whitelist (empty = all allowed) |
 | allowTrading | boolean | true | Enable/disable token swaps |
-| allowExternalSigning | boolean | false | Enable/disable external tx signing |
 | sessionExpirationHours | number | 168 | Session token lifetime in hours (168 = 7 days) |
 
 ## Rules

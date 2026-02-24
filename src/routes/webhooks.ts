@@ -3,6 +3,7 @@ import { verifyHeliusWebhookAuth } from "../utils/helius.js";
 import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { success, error } from "../utils/response.js";
+import { createAuditLog } from "../utils/audit.js";
 
 const webhooks = new Hono();
 
@@ -61,21 +62,19 @@ webhooks.post("/helius", async (c) => {
         
         if (agent) {
           // This is a deposit to one of our wallets
-          await db.auditLog.create({
-            data: {
-              agentId: agent.id,
-              action: "deposit",
-              asset: "sol",
-              amount: transfer.amount / 1e9, // Convert lamports to SOL
-              to: toAddress,
-              from: transfer.fromUserAccount,
-              status: "confirmed",
-              signature: tx.signature,
-              metadata: {
-                transactionType: tx.type,
-                depositType: "sol",
-                rawAmount: transfer.amount.toString(),
-              },
+          await createAuditLog({
+            agentId: agent.id,
+            action: "deposit",
+            asset: "sol",
+            amount: transfer.amount / 1e9, // Convert lamports to SOL
+            to: toAddress,
+            from: transfer.fromUserAccount,
+            status: "confirmed",
+            signature: tx.signature,
+            metadata: {
+              transactionType: tx.type,
+              depositType: "sol",
+              rawAmount: transfer.amount.toString(),
             },
           });
           depositsProcessed++;
@@ -96,22 +95,20 @@ webhooks.post("/helius", async (c) => {
         });
         
         if (agent) {
-          await db.auditLog.create({
-            data: {
-              agentId: agent.id,
-              action: "deposit",
-              asset: transfer.mint,
-              amount: transfer.tokenAmount,
-              to: toAddress,
-              from: transfer.fromUserAccount,
-              status: "confirmed",
-              signature: tx.signature,
-              metadata: {
-                transactionType: tx.type,
-                depositType: "spl",
-                mint: transfer.mint,
-                rawAmount: transfer.tokenAmount.toString(),
-              },
+          await createAuditLog({
+            agentId: agent.id,
+            action: "deposit",
+            asset: transfer.mint,
+            amount: transfer.tokenAmount,
+            to: toAddress,
+            from: transfer.fromUserAccount,
+            status: "confirmed",
+            signature: tx.signature,
+            metadata: {
+              transactionType: tx.type,
+              depositType: "spl",
+              mint: transfer.mint,
+              rawAmount: transfer.tokenAmount.toString(),
             },
           });
           depositsProcessed++;

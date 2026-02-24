@@ -16,9 +16,12 @@ model Agent {
   solanaAddress    String   @unique
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+  lastActiveAt     DateTime @default(now())
 
   policy    AgentPolicy?
   auditLogs AuditLog[]
+
+  @@index([lastActiveAt])
 }
 
 model AgentPolicy {
@@ -45,4 +48,18 @@ model AuditLog {
 
   @@index([agentId, createdAt])
   @@index([agentId, asset, status])
+  @@index([createdAt])
+  @@index([action, status, createdAt])
+}
+
+model StatsCache {
+  id                   String   @id
+  totalAgents          Int      @default(0)
+  totalTrades          Int      @default(0)
+  totalTradeVolume     Float    @default(0)
+  totalTransfers       Int      @default(0)
+  totalTransferVolume  Float    @default(0)
+  totalDeposits        Int      @default(0)
+  totalDepositVolume   Float    @default(0)
+  updatedAt            DateTime @updatedAt
 }

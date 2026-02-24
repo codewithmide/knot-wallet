@@ -23,6 +23,10 @@ export const config = cleanEnv(process.env, {
   // Jupiter
   JUPITER_API_KEY: str(),
 
+  // Stats (private endpoint)
+  STATS_API_SECRET: str(),
+  STATS_TOKEN_TTL_SECONDS: num({ default: 300 }),
+
   // Auth
   JWT_SECRET: str(),
   OTP_TTL_MINUTES: num({ default: 10 }),
@@ -32,7 +36,7 @@ export const config = cleanEnv(process.env, {
   SMTP_PORT: port({ default: 587 }),
   SMTP_USERNAME: str(),
   SMTP_PASS: str(),
-  EMAIL_FROM: str({ default: "Knot <noreply@knot.dev>" }),
+  EMAIL_FROM: str({ default: "Knot <noreply@useknot.xyz>" }),
 
   // Database
   DATABASE_URL: str(),
