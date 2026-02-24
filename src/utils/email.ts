@@ -6,28 +6,65 @@ import { logger } from "./logger.js";
 const transporter = nodemailer.createTransport({
   host: config.SMTP_HOST,
   port: config.SMTP_PORT,
-  secure: config.SMTP_PORT === 465, // true for 465, false for other ports
+  secure: config.SMTP_PORT === 465,
   auth: {
     user: config.SMTP_USERNAME,
     pass: config.SMTP_PASS,
   },
-  connectionTimeout: 10000, // 10 seconds to establish connection
-  greetingTimeout: 10000,   // 10 seconds for greeting
-  socketTimeout: 15000,     // 15 seconds for socket inactivity
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 });
 
-// Verify SMTP connection on startup
-transporter.verify()
+interface MailtrapRecipient {
+  email: string;
+}
+
+interface ParsedFrom {
+  name: string;
+  email: string;
+}
+
+function parseFromAddress(input: string): ParsedFrom {
+  const match = input.match(/^\s*([^<]+?)\s*<\s*([^>]+)\s*>\s*$/);
+  if (match) {
+    return { name: match[1].trim(), email: match[2].trim() };
+  }
+
+  if (input.includes("@")) {
+    return { name: "Knot", email: input.trim() };
+  }
+
+  throw new Error("EMAIL_FROM must be a valid email or in 'Name <email>' format");
+}
+
+const fromAddress = parseFromAddress(config.EMAIL_FROM);
+logger.info("Mail service configured", {
+  provider: "smtp",
+  fromEmail: fromAddress.email,
+  smtpHost: config.SMTP_HOST,
+  smtpPort: config.SMTP_PORT,
+});
+
+transporter
+  .verify()
   .then(() => logger.info("SMTP connection verified successfully"))
-  .catch((err) => logger.warn("SMTP connection failed on startup - emails may not send", { error: String(err) }));
+  .catch((err) =>
+    logger.warn("SMTP connection failed on startup - emails may not send", {
+      error: String(err),
+    })
+  );
 
 /**
  * Send OTP code via email
  */
 export async function sendOtpEmail(email: string, otpCode: string): Promise<void> {
   const mailOptions = {
-    from: config.EMAIL_FROM,
-    to: email,
+    from: {
+      email: fromAddress.email,
+      name: fromAddress.name,
+    },
+    to: [{ email }] as MailtrapRecipient[],
     subject: "Your Knot Wallet verification code",
     text: `Your verification code is: ${otpCode}\n\nThis code expires in 10 minutes.\n\nIf you didn't request this code, you can safely ignore this email.`,
     html: `
@@ -44,18 +81,34 @@ export async function sendOtpEmail(email: string, otpCode: string): Promise<void
   };
 
   try {
-    logger.info("Attempting to send OTP email", { email, smtpHost: config.SMTP_HOST, smtpPort: config.SMTP_PORT });
-    const result = await transporter.sendMail(mailOptions);
-    logger.info("OTP email sent successfully", { email, emailMessageId: result.messageId, note: "This emailMessageId is NOT the otpId" });
+    logger.info("Attempting to send OTP email", {
+      email,
+      provider: "smtp",
+      smtpHost: config.SMTP_HOST,
+      smtpPort: config.SMTP_PORT,
+    });
+
+    const response = await transporter.sendMail({
+      from: `${mailOptions.from.name} <${mailOptions.from.email}>`,
+      to: mailOptions.to.map((recipient) => recipient.email).join(", "),
+      subject: mailOptions.subject,
+      text: mailOptions.text,
+      html: mailOptions.html,
+    });
+
+    logger.info("OTP email sent successfully", {
+      email,
+      provider: "smtp",
+      emailMessageId: response.messageId,
+    });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorCode = (error as { code?: string })?.code;
     logger.error("Failed to send OTP email", {
       email,
       error: errorMessage,
-      errorCode,
+      provider: "smtp",
       smtpHost: config.SMTP_HOST,
-      smtpPort: config.SMTP_PORT
+      smtpPort: config.SMTP_PORT,
     });
     throw new Error(`Failed to send verification email: ${errorMessage}`);
   }

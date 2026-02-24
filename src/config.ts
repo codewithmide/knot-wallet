@@ -36,7 +36,7 @@ export const config = cleanEnv(process.env, {
   SMTP_PORT: port({ default: 587 }),
   SMTP_USERNAME: str(),
   SMTP_PASS: str(),
-  EMAIL_FROM: str({ default: "Knot <noreply@useknot.xyz>" }),
+  EMAIL_FROM: str({ default: "Knot <noreply@notification.useknot.xyz>" }),
 
   // Database
   DATABASE_URL: str(),
