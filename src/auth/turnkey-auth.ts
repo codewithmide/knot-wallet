@@ -10,9 +10,6 @@ import { incrementTotalAgents } from "../utils/stats-cache.js";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
-// OTP storage (in production, use Redis with TTL)
-const otpStore = new Map<string, { code: string; expiresAt: number; email: string }>();
-
 /**
  * Generate a 6-digit OTP code
  */
@@ -21,9 +18,8 @@ function generateOtpCode(): string {
 }
 
 /**
- * Start OTP flow - generates OTP and stores it
- * In production, this would send an email via Nodemailer/SendGrid
- * For now, we log the OTP for testing
+ * Start OTP flow - generates OTP and stores it in database
+ * In production, this would send an email via Nodemailer/Mailtrap API
  */
 export async function startOtpFlow(email: string): Promise<{ otpId: string; isNewUser: boolean }> {
   const startedAt = Date.now();
@@ -62,10 +58,18 @@ export async function startOtpFlow(email: string): Promise<{ otpId: string; isNe
     });
 
     const otpCode = generateOtpCode();
-    const otpId = crypto.randomUUID();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    const expiresAt = new Date(Date.now() + config.OTP_TTL_MINUTES * 60 * 1000);
 
-    otpStore.set(otpId, { code: otpCode, expiresAt, email });
+    // Store OTP in database
+    const otpRecord = await db.otpCode.create({
+      data: {
+        email,
+        code: otpCode,
+        expiresAt,
+      },
+    });
+
+    const otpId = otpRecord.id;
     logger.info("OTP flow stage", { email, stage: "otp_generated_and_stored", otpId });
 
     const emailStart = Date.now();
@@ -115,8 +119,8 @@ export async function completeOtpFlow(
 }> {
   logger.info("Completing OTP flow", { email, otpId });
 
-  // Verify OTP
-  const storedOtp = otpStore.get(otpId);
+  // Look up OTP from database
+  const storedOtp = await db.otpCode.findUnique({ where: { id: otpId } });
   if (!storedOtp) {
     throw new AuthenticationError("OTP not found or expired");
   }
@@ -125,8 +129,13 @@ export async function completeOtpFlow(
     throw new AuthenticationError("Email mismatch");
   }
 
-  if (Date.now() > storedOtp.expiresAt) {
-    otpStore.delete(otpId);
+  if (storedOtp.used) {
+    throw new AuthenticationError("OTP already used");
+  }
+
+  if (new Date() > storedOtp.expiresAt) {
+    // Mark as used to prevent reuse attempts
+    await db.otpCode.update({ where: { id: otpId }, data: { used: true } });
     throw new AuthenticationError("OTP expired");
   }
 
@@ -134,8 +143,8 @@ export async function completeOtpFlow(
     throw new AuthenticationError("Invalid OTP code");
   }
 
-  // Clear used OTP
-  otpStore.delete(otpId);
+  // Mark OTP as used
+  await db.otpCode.update({ where: { id: otpId }, data: { used: true } });
 
   // Check if user exists
   let agent = await db.agent.findUnique({ where: { email } });

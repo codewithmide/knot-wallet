@@ -52,6 +52,18 @@ model AuditLog {
   @@index([action, status, createdAt])
 }
 
+model OtpCode {
+  id        String   @id @default(uuid())
+  email     String
+  code      String   // 6-digit code
+  expiresAt DateTime // when this OTP expires
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email, used])
+  @@index([expiresAt])
+}
+
 model StatsCache {
   id                   String   @id
   totalAgents          Int      @default(0)
