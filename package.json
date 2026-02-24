@@ -38,7 +38,6 @@
     "envalid": "^8.1.1",
     "hono": "^4.12.0",
     "jsonwebtoken": "^9.0.3",
-    "mailtrap": "^4.4.0",
     "nodemailer": "^8.0.1",
     "pg": "^8.18.0",
     "zod": "^4.3.6"
