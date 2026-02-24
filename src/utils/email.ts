@@ -2,6 +2,10 @@ import nodemailer from "nodemailer";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
 
+// Hardcoded sender address (not sensitive, non-secret config)
+const SENDER_NAME = "Knot";
+const SENDER_EMAIL = "noreply@notification.useknot.xyz";
+
 // Create reusable transporter with timeouts
 const transporter = nodemailer.createTransport({
   host: config.SMTP_HOST,
@@ -20,30 +24,9 @@ interface MailtrapRecipient {
   email: string;
 }
 
-interface ParsedFrom {
-  name: string;
-  email: string;
-}
-
-function parseFromAddress(input: string): ParsedFrom {
-  const normalized = input.trim().replace(/^['"]|['"]$/g, "");
-
-  const match = normalized.match(/^\s*([^<]+?)\s*<\s*([^>]+)\s*>\s*$/);
-  if (match) {
-    return { name: match[1].trim(), email: match[2].trim() };
-  }
-
-  if (normalized.includes("@")) {
-    return { name: "Knot", email: normalized.trim() };
-  }
-
-  throw new Error("EMAIL_FROM must be a valid email or in 'Name <email>' format");
-}
-
-const fromAddress = parseFromAddress(config.EMAIL_FROM);
 logger.info("Mail service configured", {
   provider: "smtp",
-  fromEmail: fromAddress.email,
+  fromEmail: SENDER_EMAIL,
   smtpHost: config.SMTP_HOST,
   smtpPort: config.SMTP_PORT,
 });
@@ -63,8 +46,8 @@ transporter
 export async function sendOtpEmail(email: string, otpCode: string): Promise<void> {
   const mailOptions = {
     from: {
-      email: fromAddress.email,
-      name: fromAddress.name,
+      email: SENDER_EMAIL,
+      name: SENDER_NAME,
     },
     to: [{ email }] as MailtrapRecipient[],
     subject: "Your Knot Wallet verification code",
@@ -91,7 +74,7 @@ export async function sendOtpEmail(email: string, otpCode: string): Promise<void
     });
 
     const response = await transporter.sendMail({
-      from: `${mailOptions.from.name} <${mailOptions.from.email}>`,
+      from: `${SENDER_NAME} <${SENDER_EMAIL}>`,
       to: mailOptions.to.map((recipient) => recipient.email).join(", "),
       subject: mailOptions.subject,
       text: mailOptions.text,
