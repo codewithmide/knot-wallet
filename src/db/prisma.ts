@@ -10,6 +10,11 @@ const pool = new Pool({
   ssl: {
     rejectUnauthorized: false, // Accept DigitalOcean's self-signed cert
   },
+  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: 30_000,
+  query_timeout: 15_000,
+  statement_timeout: 15_000,
+  keepAlive: true,
 });
 
 // Create Prisma adapter

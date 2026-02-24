@@ -4,6 +4,9 @@ import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { success, error } from "../utils/response.js";
 import { createAuditLog } from "../utils/audit.js";
+import { computeUsdValue, getTokenPriceUsd } from "../utils/pricing.js";
+
+const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 const webhooks = new Hono();
 
@@ -61,20 +64,27 @@ webhooks.post("/helius", async (c) => {
         });
         
         if (agent) {
+          const solAmount = transfer.amount / 1e9;
+          const priceUsd = await getTokenPriceUsd(SOL_MINT);
+          const normalizedUsdAmount = computeUsdValue(solAmount, priceUsd);
+
           // This is a deposit to one of our wallets
           await createAuditLog({
             agentId: agent.id,
             action: "deposit",
             asset: "sol",
-            amount: transfer.amount / 1e9, // Convert lamports to SOL
+            amount: solAmount, // Convert lamports to SOL
             to: toAddress,
             from: transfer.fromUserAccount,
             status: "confirmed",
             signature: tx.signature,
+            normalizedUsdAmount,
             metadata: {
               transactionType: tx.type,
               depositType: "sol",
               rawAmount: transfer.amount.toString(),
+              priceUsd,
+              normalizedUsdAmount,
             },
           });
           depositsProcessed++;
@@ -95,20 +105,27 @@ webhooks.post("/helius", async (c) => {
         });
         
         if (agent) {
+          const tokenAmount = Number(transfer.tokenAmount);
+          const priceUsd = await getTokenPriceUsd(transfer.mint);
+          const normalizedUsdAmount = computeUsdValue(tokenAmount, priceUsd);
+
           await createAuditLog({
             agentId: agent.id,
             action: "deposit",
             asset: transfer.mint,
-            amount: transfer.tokenAmount,
+            amount: tokenAmount,
             to: toAddress,
             from: transfer.fromUserAccount,
             status: "confirmed",
             signature: tx.signature,
+            normalizedUsdAmount,
             metadata: {
               transactionType: tx.type,
               depositType: "spl",
               mint: transfer.mint,
               rawAmount: transfer.tokenAmount.toString(),
+              priceUsd,
+              normalizedUsdAmount,
             },
           });
           depositsProcessed++;

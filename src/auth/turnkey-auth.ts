@@ -2,7 +2,7 @@ import { turnkeyClient } from "../turnkey/client.js";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { db } from "../db/prisma.js";
-import { AuthenticationError } from "../utils/errors.js";
+import { AuthenticationError, DatabaseUnavailableError } from "../utils/errors.js";
 import { sendOtpEmail } from "../utils/email.js";
 import { DEFAULT_POLICY, AgentPolicy } from "../policy/types.js";
 import { registerHeliusWebhook } from "../utils/helius.js";
@@ -26,26 +26,77 @@ function generateOtpCode(): string {
  * For now, we log the OTP for testing
  */
 export async function startOtpFlow(email: string): Promise<{ otpId: string; isNewUser: boolean }> {
-  logger.info("Starting OTP flow", { email });
+  const startedAt = Date.now();
+  logger.info("Starting OTP flow", { email, stage: "start" });
 
-  // Check if user already exists
-  const existingAgent = await db.agent.findUnique({ where: { email } });
-  const isNewUser = !existingAgent;
+  let isNewUser = true;
+  try {
+    const lookupStart = Date.now();
+    logger.info("OTP flow stage", { email, stage: "db_lookup_start" });
 
-  // Generate OTP
-  const otpCode = generateOtpCode();
-  const otpId = crypto.randomUUID();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    let existingAgent;
+    try {
+      existingAgent = await db.agent.findUnique({ where: { email } });
+    } catch (err) {
+      const errCode = (err as { code?: string })?.code;
+      const errMessage = String(err);
+      logger.error("OTP db lookup failed", {
+        email,
+        stage: "db_lookup_failed",
+        durationMs: Date.now() - lookupStart,
+        errCode,
+        errMessage,
+      });
 
-  // Store OTP
-  otpStore.set(otpId, { code: otpCode, expiresAt, email });
+      throw new DatabaseUnavailableError(
+        "Database is temporarily unavailable. Please retry in a few seconds."
+      );
+    }
+    isNewUser = !existingAgent;
 
-  // Send OTP via email
-  await sendOtpEmail(email, otpCode);
+    logger.info("OTP flow stage", {
+      email,
+      stage: "db_lookup_done",
+      durationMs: Date.now() - lookupStart,
+      isNewUser,
+    });
 
-  logger.info("OTP flow started successfully", { email, otpId, isNewUser });
+    const otpCode = generateOtpCode();
+    const otpId = crypto.randomUUID();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  return { otpId, isNewUser };
+    otpStore.set(otpId, { code: otpCode, expiresAt, email });
+    logger.info("OTP flow stage", { email, stage: "otp_generated_and_stored", otpId });
+
+    const emailStart = Date.now();
+    logger.info("OTP flow stage", { email, stage: "email_send_start", otpId });
+    await sendOtpEmail(email, otpCode);
+    logger.info("OTP flow stage", {
+      email,
+      stage: "email_send_done",
+      otpId,
+      durationMs: Date.now() - emailStart,
+    });
+
+    logger.info("OTP flow started successfully", {
+      email,
+      otpId,
+      isNewUser,
+      totalDurationMs: Date.now() - startedAt,
+    });
+
+    return { otpId, isNewUser };
+  } catch (error) {
+    logger.error("OTP flow failed", {
+      email,
+      stage: "failed",
+      isNewUser,
+      totalDurationMs: Date.now() - startedAt,
+      error: String(error),
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    throw error;
+  }
 }
 
 /**

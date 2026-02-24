@@ -19,18 +19,45 @@ connect.post(
   zValidator("json", z.object({ email: z.string().email() })),
   async (c) => {
     const { email } = c.req.valid("json");
+    const startedAt = Date.now();
 
     logger.info("Connection start requested", { email });
 
     try {
       const { otpId, isNewUser } = await startOtpFlow(email);
 
+      logger.info("Connection start completed", {
+        email,
+        otpId,
+        isNewUser,
+        durationMs: Date.now() - startedAt,
+      });
+
       return success(c, "OTP sent to your email. Check your inbox.", {
         otpId,
         isNewUser,
       });
     } catch (err) {
-      logger.error("Failed to start OTP flow", { email, error: String(err) });
+      const errorMessage = String(err);
+
+      if (err instanceof AppError) {
+        logger.error("Failed to start OTP flow", {
+          email,
+          error: errorMessage,
+          durationMs: Date.now() - startedAt,
+          probableCause: err.code ?? "app_error",
+        });
+        return error(c, err.message, err.statusCode, { code: err.code });
+      }
+
+      logger.error("Failed to start OTP flow", {
+        email,
+        error: errorMessage,
+        durationMs: Date.now() - startedAt,
+        probableCause: errorMessage.includes("Operation has timed out")
+          ? "database_timeout"
+          : "unknown",
+      });
       return error(c, "Failed to send OTP. Please try again.", 500);
     }
   }

@@ -18,7 +18,12 @@ export async function incrementTotalAgents() {
   });
 }
 
-export async function incrementStatsForAudit(action: string, status: string, amount?: number | null) {
+export async function incrementStatsForAudit(
+  action: string,
+  status: string,
+  amount?: number | null,
+  options?: { normalizedUsdAmount?: number | null }
+) {
   if (status !== "confirmed") {
     return;
   }
@@ -31,6 +36,7 @@ export async function incrementStatsForAudit(action: string, status: string, amo
     totalTransferVolume?: { increment: number };
     totalDeposits?: { increment: number };
     totalDepositVolume?: { increment: number };
+    totalDepositVolumeUsd?: { increment: number };
   } = {};
 
   if (action === "trade") {
@@ -42,6 +48,12 @@ export async function incrementStatsForAudit(action: string, status: string, amo
   } else if (action === "deposit") {
     update.totalDeposits = { increment: 1 };
     update.totalDepositVolume = { increment: safeAmount };
+
+    const safeUsdAmount =
+      typeof options?.normalizedUsdAmount === "number" && Number.isFinite(options.normalizedUsdAmount)
+        ? options.normalizedUsdAmount
+        : 0;
+    update.totalDepositVolumeUsd = { increment: safeUsdAmount };
   } else {
     return;
   }
@@ -60,6 +72,7 @@ function materializeCreate(update: {
   totalTransferVolume?: { increment: number };
   totalDeposits?: { increment: number };
   totalDepositVolume?: { increment: number };
+  totalDepositVolumeUsd?: { increment: number };
 }) {
   return {
     totalTrades: update.totalTrades?.increment ?? 0,
@@ -68,5 +81,6 @@ function materializeCreate(update: {
     totalTransferVolume: update.totalTransferVolume?.increment ?? 0,
     totalDeposits: update.totalDeposits?.increment ?? 0,
     totalDepositVolume: update.totalDepositVolume?.increment ?? 0,
+    totalDepositVolumeUsd: update.totalDepositVolumeUsd?.increment ?? 0,
   };
 }

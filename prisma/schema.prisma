@@ -61,5 +61,6 @@ model StatsCache {
   totalTransferVolume  Float    @default(0)
   totalDeposits        Int      @default(0)
   totalDepositVolume   Float    @default(0)
+  totalDepositVolumeUsd Float   @default(0)
   updatedAt            DateTime @updatedAt
 }

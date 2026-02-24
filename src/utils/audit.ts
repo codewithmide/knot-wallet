@@ -13,6 +13,7 @@ export async function createAuditLog(data: {
   to?: string | null;
   signature?: string | null;
   metadata?: Prisma.InputJsonValue;
+  normalizedUsdAmount?: number | null;
 }) {
   const auditLog = await db.auditLog.create({ data });
 
@@ -21,7 +22,9 @@ export async function createAuditLog(data: {
       where: { id: data.agentId },
       data: { lastActiveAt: new Date() },
     }),
-    incrementStatsForAudit(data.action, data.status, data.amount),
+    incrementStatsForAudit(data.action, data.status, data.amount, {
+      normalizedUsdAmount: data.normalizedUsdAmount,
+    }),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === "rejected") {

@@ -65,6 +65,13 @@ export class TradeError extends AppError {
   }
 }
 
+export class DatabaseUnavailableError extends AppError {
+  constructor(message: string = "Database temporarily unavailable") {
+    super(message, 503, "DATABASE_UNAVAILABLE");
+    this.name = "DatabaseUnavailableError";
+  }
+}
+
 export const errorToResponse = (error: unknown): { message: string; code?: string; statusCode: number } => {
   if (error instanceof AppError) {
     return {

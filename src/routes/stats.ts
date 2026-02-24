@@ -98,6 +98,7 @@ stats.get("/", async (c) => {
       transferVolume: toNumber(statsCache.totalTransferVolume),
       deposits: toNumber(statsCache.totalDeposits),
       depositVolume: toNumber(statsCache.totalDepositVolume),
+      depositVolumeUsd: toNumber(statsCache.totalDepositVolumeUsd),
     };
 
     return success(c, "Stats retrieved successfully.", {
