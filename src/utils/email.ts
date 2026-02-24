@@ -1,4 +1,3 @@
-import nodemailer from "nodemailer";
 import { config } from "../config.js";
 import { logger } from "./logger.js";
 
@@ -6,94 +5,79 @@ import { logger } from "./logger.js";
 const SENDER_NAME = "Knot";
 const SENDER_EMAIL = "noreply@notification.useknot.xyz";
 
-// Create reusable transporter with timeouts
-const transporter = nodemailer.createTransport({
-  host: config.SMTP_HOST,
-  port: config.SMTP_PORT,
-  secure: config.SMTP_PORT === 465,
-  auth: {
-    user: config.SMTP_USERNAME,
-    pass: config.SMTP_PASS,
-  },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-});
-
-interface MailtrapRecipient {
-  email: string;
-}
+const MAILTRAP_API_URL = "https://send.api.mailtrap.io/api/send";
 
 logger.info("Mail service configured", {
-  provider: "smtp",
+  provider: "mailtrap-api",
   fromEmail: SENDER_EMAIL,
-  smtpHost: config.SMTP_HOST,
-  smtpPort: config.SMTP_PORT,
 });
 
-transporter
-  .verify()
-  .then(() => logger.info("SMTP connection verified successfully"))
-  .catch((err) =>
-    logger.warn("SMTP connection failed on startup - emails may not send", {
-      error: String(err),
-    })
-  );
-
 /**
- * Send OTP code via email
+ * Send OTP code via email using Mailtrap API
  */
 export async function sendOtpEmail(email: string, otpCode: string): Promise<void> {
-  const mailOptions = {
-    from: {
-      email: SENDER_EMAIL,
-      name: SENDER_NAME,
-    },
-    to: [{ email }] as MailtrapRecipient[],
-    subject: "Your Knot Wallet verification code",
-    text: `Your verification code is: ${otpCode}\n\nThis code expires in 10 minutes.\n\nIf you didn't request this code, you can safely ignore this email.`,
-    html: `
-      <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #333; margin-bottom: 20px;">Knot Wallet</h2>
-        <p style="color: #666; margin-bottom: 20px;">Your verification code is:</p>
-        <div style="background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin-bottom: 20px;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #333;">${otpCode}</span>
-        </div>
-        <p style="color: #999; font-size: 14px;">This code expires in 10 minutes.</p>
-        <p style="color: #999; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+  const htmlContent = `
+    <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
+      <h2 style="color: #333; margin-bottom: 20px;">Knot Wallet</h2>
+      <p style="color: #666; margin-bottom: 20px;">Your verification code is:</p>
+      <div style="background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin-bottom: 20px;">
+        <span style="font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #333;">${otpCode}</span>
       </div>
-    `,
-  };
+      <p style="color: #999; font-size: 14px;">This code expires in 10 minutes.</p>
+      <p style="color: #999; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  const textContent = `Your verification code is: ${otpCode}\n\nThis code expires in 10 minutes.\n\nIf you didn't request this code, you can safely ignore this email.`;
 
   try {
     logger.info("Attempting to send OTP email", {
       email,
-      provider: "smtp",
-      smtpHost: config.SMTP_HOST,
-      smtpPort: config.SMTP_PORT,
+      provider: "mailtrap-api",
     });
 
-    const response = await transporter.sendMail({
-      from: `${SENDER_NAME} <${SENDER_EMAIL}>`,
-      to: mailOptions.to.map((recipient) => recipient.email).join(", "),
-      subject: mailOptions.subject,
-      text: mailOptions.text,
-      html: mailOptions.html,
+    const response = await fetch(MAILTRAP_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.MAILTRAP_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: {
+          email: SENDER_EMAIL,
+          name: SENDER_NAME,
+        },
+        to: [
+          {
+            email,
+          },
+        ],
+        subject: "Your Knot Wallet verification code",
+        text: textContent,
+        html: htmlContent,
+      }),
     });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(
+        `Mailtrap API error: ${response.status} ${response.statusText}. ${errorBody}`
+      );
+    }
+
+    const responseData = (await response.json()) as { success?: boolean; message_id?: string };
 
     logger.info("OTP email sent successfully", {
       email,
-      provider: "smtp",
-      emailMessageId: response.messageId,
+      provider: "mailtrap-api",
+      messageId: responseData.message_id,
     });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Failed to send OTP email", {
       email,
       error: errorMessage,
-      provider: "smtp",
-      smtpHost: config.SMTP_HOST,
-      smtpPort: config.SMTP_PORT,
+      provider: "mailtrap-api",
     });
     throw new Error(`Failed to send verification email: ${errorMessage}`);
   }

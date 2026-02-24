@@ -31,11 +31,12 @@ export const config = cleanEnv(process.env, {
   JWT_SECRET: str(),
   OTP_TTL_MINUTES: num({ default: 10 }),
 
-  // Email (SMTP)
-  SMTP_HOST: str(),
+  // Email
+  MAILTRAP_API_KEY: str(),
+  SMTP_HOST: str({ default: "" }),
   SMTP_PORT: port({ default: 587 }),
-  SMTP_USERNAME: str(),
-  SMTP_PASS: str(),
+  SMTP_USERNAME: str({ default: "" }),
+  SMTP_PASS: str({ default: "" }),
 
   // Database
   DATABASE_URL: str(),
