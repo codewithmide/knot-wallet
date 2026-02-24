@@ -26,13 +26,15 @@ interface ParsedFrom {
 }
 
 function parseFromAddress(input: string): ParsedFrom {
-  const match = input.match(/^\s*([^<]+?)\s*<\s*([^>]+)\s*>\s*$/);
+  const normalized = input.trim().replace(/^['"]|['"]$/g, "");
+
+  const match = normalized.match(/^\s*([^<]+?)\s*<\s*([^>]+)\s*>\s*$/);
   if (match) {
     return { name: match[1].trim(), email: match[2].trim() };
   }
 
-  if (input.includes("@")) {
-    return { name: "Knot", email: input.trim() };
+  if (normalized.includes("@")) {
+    return { name: "Knot", email: normalized.trim() };
   }
 
   throw new Error("EMAIL_FROM must be a valid email or in 'Name <email>' format");
