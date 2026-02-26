@@ -4,7 +4,7 @@ import {
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import { TurnkeySigner } from "@turnkey/solana";
-import { turnkeyDelegatedClient } from "./client.js";
+import { turnkeyClient, turnkeyDelegatedClient } from "./client.js";
 import { config, getSolanaRpcUrl } from "../config.js";
 import { logger } from "../utils/logger.js";
 
@@ -69,6 +69,56 @@ export async function signAndBroadcast(
   );
 
   logger.info("Transaction confirmed", { signature });
+
+  return signature;
+}
+
+/**
+ * Signs and broadcasts using the PARENT organization client.
+ * Use this for admin wallet operations (wallet in parent org, not a sub-org).
+ *
+ * Uses turnkeyClient (parent API keys) instead of turnkeyDelegatedClient.
+ */
+export async function signAndBroadcastAdmin(
+  transaction: VersionedTransaction,
+  signerAddress: string,
+  network: "mainnet" | "devnet" = "mainnet"
+): Promise<string> {
+  const conn = network === "devnet" ? devnetConnection : connection;
+
+  // Set a fresh blockhash before signing
+  const { blockhash, lastValidBlockHeight } =
+    await conn.getLatestBlockhash("confirmed");
+  transaction.message.recentBlockhash = blockhash;
+
+  logger.debug("Signing admin transaction", { signerAddress, network });
+
+  // Use parent org client for admin wallet
+  const turnkeySigner = new TurnkeySigner({
+    organizationId: config.TURNKEY_ORGANIZATION_ID,
+    client: turnkeyClient,
+  });
+
+  // Signing happens server-side in Turnkey's TEE
+  await turnkeySigner.addSignature(transaction, signerAddress);
+
+  // Broadcast with Helius for optimal landing rate
+  const rawTx = transaction.serialize();
+  const signature = await conn.sendRawTransaction(rawTx, {
+    skipPreflight: false,
+    maxRetries: 3,
+    preflightCommitment: "confirmed",
+  });
+
+  logger.info("Admin transaction broadcast", { signature });
+
+  // Wait for confirmation
+  await conn.confirmTransaction(
+    { signature, blockhash, lastValidBlockHeight },
+    "confirmed"
+  );
+
+  logger.info("Admin transaction confirmed", { signature });
 
   return signature;
 }

@@ -1,13 +1,13 @@
 ---
 name: knot
-version: 1.0.0
-description: Solana Agent Wallet. Holds SOL and SPL tokens, signs transactions, trades on Jupiter. Server-side keys via Turnkey TEE.
-homepage: https://useknot.xyz
+description: Solana Agent Wallet with prediction markets. Holds SOL and SPL tokens, trades on Jupiter, provides liquidity on Meteora DLMM, trades prediction markets on Kalshi. Server-side keys via Turnkey TEE.
 metadata:
   category: finance
   chains: [solana]
   networks: [mainnet-beta, devnet]
   tokens: [SOL, USDC, USDT]
+  defi: [meteora-dlmm]
+  predictions: [kalshi]
   api_base: https://api.useknot.xyz
 ---
 
@@ -90,7 +90,190 @@ GET /tokens/:query
 Look up token information by mint address OR symbol.
 Returns: { mint, symbol, name, decimals, verified, source }
 Examples: GET /tokens/USDG, GET /tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
-Note: Does not require authentication.
+Note: Requires authentication.
+
+### Liquidity Provision (Meteora DLMM)
+
+Provide liquidity to Meteora DLMM pools. Knot manages liquidity on your behalf via a custodial model.
+
+**How It Works:**
+1. **Add liquidity** — Your tokens are transferred to Knot's admin wallet, which provides liquidity on your behalf
+2. **Remove liquidity** — Admin removes liquidity and transfers proceeds (minus 1% exit fee) to your wallet
+3. **Claim rewards** — Admin claims fees and transfers them (minus 1% platform fee) to your wallet
+
+**Fees:**
+- **1% entry fee** on add liquidity (applied to deposited amounts)
+- **1% exit fee** on remove liquidity (deducted from returned amounts)
+- **1% platform fee** on claimed rewards (deducted from claimed fees)
+
+---
+
+**Market Discovery (Read-Only)**
+
+**List Available Pools**
+GET /wallets/me/pools
+Query params: tokenX (optional), tokenY (optional), limit (default 50)
+Returns: { pools: [{ address, name, mintX, mintY, symbolX, symbolY, binStep, liquidity, apr, feeApr, tradeVolume24h }] }
+Example: GET /wallets/me/pools?tokenX=SOL&tokenY=USDC
+
+**Get Pool Details**
+GET /wallets/me/pools/:address
+Returns: { address, name, activeBinId, activePrice, reserveX, reserveY, apr, feeApr, ... }
+
+---
+
+**Position Management**
+
+**Get Your LP Positions**
+GET /wallets/me/positions
+Query params: status (optional - "active" or "closed")
+Returns: { positions: [{ id, poolAddress, poolName, positionPubkey, strategy, amountX, amountY, symbolX, symbolY, status, createdAt }] }
+
+**Add Liquidity**
+POST /wallets/me/actions/add-liquidity
+Body: {
+  "pool": "<pool_address>",
+  "amountX": 1.0,              // Amount of token X (required)
+  "amountY": 100.0,            // Amount of token Y (optional, auto-calculated if omitted)
+  "strategy": "spot",          // "spot" (uniform), "curve" (concentrated), "bidAsk" (asymmetric)
+  "rangeWidth": 10             // Bins on each side of active price (default: 10)
+}
+Returns: { positionId, poolAddress, positionPubkey, strategy, amountX, amountY, entryFeeBps, status }
+
+This automatically:
+1. Transfers token X and token Y from your wallet to Knot
+2. Knot provides liquidity to the pool on your behalf
+3. Position is tracked in your account
+
+**Remove Liquidity**
+POST /wallets/me/actions/remove-liquidity
+Body: {
+  "positionId": "<uuid>",      // Position ID from GET /positions (NOT the on-chain pubkey)
+  "percentage": 100            // 1-100, how much to withdraw (default: 100)
+}
+Returns: { positionId, poolAddress, percentageRemoved, amountXReturned, amountYReturned, exitFeeBps, feeDeductedX, feeDeductedY, status }
+
+This automatically:
+1. Knot removes liquidity from the pool
+2. Deducts 1% exit fee from the returned amounts
+3. Transfers net proceeds to your wallet
+
+**Claim Rewards/Fees**
+POST /wallets/me/actions/claim-rewards
+Body: {
+  "positionId": "<uuid>"       // Position ID from GET /positions
+}
+Returns: { positionId, feeX, feeY, platformFeeX, platformFeeY, netFeeX, netFeeY, status }
+
+This automatically:
+1. Knot claims accumulated fees from the position
+2. Deducts 1% platform fee from claimed rewards
+3. Transfers net rewards to your wallet
+
+### Prediction Markets (Kalshi)
+
+Trade on regulated prediction markets via Kalshi. No Kalshi account needed — Knot manages it for you.
+
+**How It Works:**
+1. **Buy contracts** — USDC is automatically transferred from your wallet
+2. **Sell contracts** — Proceeds (minus exit fee) are automatically transferred to your wallet
+3. When markets settle, winnings are automatically credited to your wallet
+
+**No separate deposit step needed.** USDC flows directly when you buy/sell.
+
+---
+
+**Market Discovery (Read-Only)**
+
+**Get Categories & Tags**
+GET /predictions/categories
+Returns: { "Sports": ["Soccer", "Basketball", ...], "Crypto": ["BTC", "ETH", ...], "Politics": [...], ... }
+Use these categories to filter events.
+
+**Get Sports Filters**
+GET /predictions/sports
+Returns: { filters_by_sports: { "Basketball": { competitions: { "Pro Basketball (M)": { scopes: [...] }, ... }, scopes: [...] }, ... }, sport_ordering: ["All sports", "Basketball", ...] }
+Use this to discover sports, competitions, and market scopes for sports betting.
+
+**List Markets**
+GET /predictions/markets
+Query params: status (open/closed/settled), event_ticker, series_ticker, limit (default 50), cursor, tradeable_only (true/false)
+Returns raw Kalshi market data: { markets: [{ ticker, event_ticker, title, subtitle, status, yes_bid, yes_ask, no_bid, no_ask, last_price, volume_24h, liquidity, open_interest, close_time, market_type, ... }] }
+Note: Set tradeable_only=true to filter out illiquid markets (those with zero liquidity)
+
+**Get Market Details**
+GET /predictions/markets/:ticker
+Returns raw Kalshi market data with all fields: { ticker, event_ticker, title, status, yes_bid, yes_ask, no_bid, no_ask, last_price, volume_24h, liquidity, open_interest, result, close_time, market_type, can_close_early, mve_selected_legs, ... }
+Note: Check liquidity > 0 before attempting to buy. If liquidity is 0, market has no orders.
+
+**Get Orderbook**
+GET /predictions/markets/:ticker/orderbook
+Query params: depth (optional)
+Returns: { ticker, yes: [{ price, quantity }], no: [{ price, quantity }] }
+
+**List Events**
+GET /predictions/events
+Query params: status (open/closed/settled), series_ticker, category (e.g., "Sports", "Crypto"), limit (default 20), cursor, active_markets_only (true/false)
+Returns raw Kalshi event data: { events: [{ event_ticker, title, subtitle, category, markets, ... }] }
+Note: Use category param to filter by category (get available categories from GET /predictions/categories). Set active_markets_only=true to filter events that have at least one tradeable market.
+
+**Get Event Details**
+GET /predictions/events/:eventTicker
+Returns raw Kalshi event data: { event_ticker, title, subtitle, category, markets, ... }
+
+---
+
+**Trading (Market Orders)**
+
+**Buy Contracts**
+POST /predictions/buy
+Body: {
+  "ticker": "KXBTC-24DEC31-T100000",  // Market ticker
+  "side": "yes",                        // "yes" or "no"
+  "count": 10                           // Number of contracts
+}
+Returns: { orderId, ticker, side, count, pricePerContract, totalCostDollars, feeDollars }
+
+This automatically:
+1. Transfers USDC (cost + 1% fee) from your wallet
+2. Executes the buy order on Kalshi
+
+**Sell Contracts**
+POST /predictions/sell
+Body: {
+  "ticker": "KXBTC-24DEC31-T100000",
+  "side": "yes",
+  "count": 5
+}
+Returns: { orderId, ticker, side, count, pricePerContract, totalProceedsDollars, feeDollars }
+
+This automatically:
+1. Executes the sell order on Kalshi
+2. Transfers proceeds (minus 1% exit fee) to your wallet
+
+---
+
+**Positions & Orders**
+
+**Get Your Positions**
+GET /predictions/positions
+Query params: settled (true/false - filter by settlement status)
+Returns: { positions: [{ ticker, side, quantity, averageCost, totalCost, currentPrice, currentValue, unrealizedPnl, settled, settlementResult, settlementPayout }], summary }
+
+**Get Your Order History**
+GET /predictions/orders
+Query params: ticker (optional), limit (default 50)
+Returns: { orders: [{ orderId, ticker, side, action, count, pricePerContract, totalCost, feeCents, status, createdAt, filledAt }] }
+
+---
+
+**Understanding Prices & Fees:**
+- Prices are in cents (1-99), representing implied probability
+- Buy YES at 65 = pay $0.65 to win $1.00 if outcome is YES (implied 65% probability)
+- Buy NO at 35 = pay $0.35 to win $1.00 if outcome is NO (implied 35% probability)
+- **1% fee on entry (buy)** — included in totalCost
+- **1% fee on exit (sell)** — deducted from proceeds
+- When a market settles: winners receive $1.00 per contract, losers receive $0
 
 ### Get/Update Policy
 GET  /wallets/me/policy
@@ -115,6 +298,11 @@ Returns: { seedPhrase }
 | dailyLimitSol | number | 5 | Rolling 24h SOL limit |
 | allowedRecipients | string[] | [] | Recipient whitelist (empty = all allowed) |
 | allowTrading | boolean | true | Enable/disable token swaps |
+| allowLiquidity | boolean | true | Enable/disable LP operations |
+| allowedPools | string[] | [] | Pool whitelist (empty = all allowed) |
+| maxLiquidityPerPosition | number | 1000 | Max USD value per LP position |
+| allowPredictionMarkets | boolean | true | Enable/disable Kalshi trading |
+| maxPredictionOrderSize | number | 100 | Max contracts per prediction order |
 | sessionExpirationHours | number | 168 | Session token lifetime in hours (168 = 7 days) |
 
 ## Rules

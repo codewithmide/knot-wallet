@@ -5,8 +5,12 @@ import { success, error } from "../utils/response.js";
 import { logger } from "../utils/logger.js";
 import { config } from "../config.js";
 import { getTokenByMint, TOKEN_DIRECTORY, isMintAddress } from "../utils/tokens.js";
+import { authMiddleware } from "../auth/middleware.js";
 
 const tokens = new Hono();
+
+// Require authentication for all token info endpoints
+tokens.use("*", authMiddleware);
 
 const JUPITER_API_BASE = "https://api.jup.ag";
 

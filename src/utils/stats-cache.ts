@@ -22,7 +22,7 @@ export async function incrementStatsForAudit(
   action: string,
   status: string,
   amount?: number | null,
-  options?: { normalizedUsdAmount?: number | null }
+  options?: { normalizedUsdAmount?: number | null; count?: number | null }
 ) {
   if (status !== "confirmed") {
     return;
@@ -37,6 +37,11 @@ export async function incrementStatsForAudit(
     totalDeposits?: { increment: number };
     totalDepositVolume?: { increment: number };
     totalDepositVolumeUsd?: { increment: number };
+    totalLiquidityAdds?: { increment: number };
+    totalLiquidityRemoves?: { increment: number };
+    totalRewardsClaimed?: { increment: number };
+    totalPredictionOrders?: { increment: number };
+    totalPredictionVolume?: { increment: number };
   } = {};
 
   if (action === "trade") {
@@ -54,6 +59,16 @@ export async function incrementStatsForAudit(
         ? options.normalizedUsdAmount
         : 0;
     update.totalDepositVolumeUsd = { increment: safeUsdAmount };
+  } else if (action === "add_liquidity") {
+    update.totalLiquidityAdds = { increment: 1 };
+  } else if (action === "remove_liquidity") {
+    update.totalLiquidityRemoves = { increment: 1 };
+  } else if (action === "claim_rewards") {
+    update.totalRewardsClaimed = { increment: 1 };
+  } else if (action === "kalshi_order") {
+    update.totalPredictionOrders = { increment: 1 };
+    const safeCount = typeof options?.count === "number" ? options.count : 0;
+    update.totalPredictionVolume = { increment: safeCount };
   } else {
     return;
   }
@@ -73,6 +88,11 @@ function materializeCreate(update: {
   totalDeposits?: { increment: number };
   totalDepositVolume?: { increment: number };
   totalDepositVolumeUsd?: { increment: number };
+  totalLiquidityAdds?: { increment: number };
+  totalLiquidityRemoves?: { increment: number };
+  totalRewardsClaimed?: { increment: number };
+  totalPredictionOrders?: { increment: number };
+  totalPredictionVolume?: { increment: number };
 }) {
   return {
     totalTrades: update.totalTrades?.increment ?? 0,
@@ -82,5 +102,10 @@ function materializeCreate(update: {
     totalDeposits: update.totalDeposits?.increment ?? 0,
     totalDepositVolume: update.totalDepositVolume?.increment ?? 0,
     totalDepositVolumeUsd: update.totalDepositVolumeUsd?.increment ?? 0,
+    totalLiquidityAdds: update.totalLiquidityAdds?.increment ?? 0,
+    totalLiquidityRemoves: update.totalLiquidityRemoves?.increment ?? 0,
+    totalRewardsClaimed: update.totalRewardsClaimed?.increment ?? 0,
+    totalPredictionOrders: update.totalPredictionOrders?.increment ?? 0,
+    totalPredictionVolume: update.totalPredictionVolume?.increment ?? 0,
   };
 }

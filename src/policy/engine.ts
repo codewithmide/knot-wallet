@@ -4,13 +4,26 @@ import { PolicyError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
 export interface PolicyRequest {
-  type: "transfer" | "trade";
+  type: "transfer" | "trade" | "add_liquidity" | "remove_liquidity" | "prediction_market";
   asset?: "sol" | "usdc" | "spl"; // "spl" for other SPL tokens
   amount?: number;
   to?: string;
   mint?: string; // mint address for SPL tokens
   fromMint?: string;
   toMint?: string;
+  // Liquidity-specific fields
+  pool?: string;
+  position?: string;
+  amountX?: number;
+  amountY?: number;
+  percentage?: number;
+  // Prediction market fields
+  action?: string;
+  ticker?: string;
+  side?: "yes" | "no";
+  orderAction?: "buy" | "sell";
+  count?: number;
+  price?: number;
 }
 
 /**
@@ -31,6 +44,36 @@ export async function checkPolicy(
   // Trading check
   if (request.type === "trade" && !policy.allowTrading) {
     throw new PolicyError("Trading is not enabled for this agent.");
+  }
+
+  // Liquidity provision checks
+  if ((request.type === "add_liquidity" || request.type === "remove_liquidity")) {
+    if (!policy.allowLiquidity) {
+      throw new PolicyError("Liquidity provision is not enabled for this agent.");
+    }
+
+    // Pool whitelist check
+    if (policy.allowedPools && policy.allowedPools.length > 0 && request.pool) {
+      if (!policy.allowedPools.includes(request.pool)) {
+        throw new PolicyError(
+          `Pool ${request.pool} is not in your allowed pools list.`
+        );
+      }
+    }
+  }
+
+  // Prediction market checks
+  if (request.type === "prediction_market") {
+    if (!policy.allowPredictionMarkets) {
+      throw new PolicyError("Prediction market trading is not enabled for this agent.");
+    }
+
+    // Order size limit
+    if (request.count !== undefined && request.count > policy.maxPredictionOrderSize) {
+      throw new PolicyError(
+        `Order size of ${request.count} contracts exceeds limit of ${policy.maxPredictionOrderSize}.`
+      );
+    }
   }
 
   // Transfer checks

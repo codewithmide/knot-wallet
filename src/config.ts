@@ -23,6 +23,21 @@ export const config = cleanEnv(process.env, {
   // Jupiter
   JUPITER_API_KEY: str(),
 
+  // Kalshi Prediction Markets
+  KALSHI_API_KEY_ID: str({ default: "" }),
+  KALSHI_RSA_PRIVATE_KEY: str({ default: "" }),
+  KALSHI_API_BASE_URL: str({ default: "https://api.elections.kalshi.com/trade-api/v2" }),
+
+  // Kalshi Admin Wallet (for custodial prediction market funds)
+  // This wallet holds all agent prediction funds - address is NOT exposed to agents
+  KNOT_KALSHI_ADMIN_KEY_ID: str({ default: "" }),  // Turnkey sub-org ID for admin wallet
+  KNOT_KALSHI_ADMIN_WALLET_ADDRESS: str({ default: "" }),  // Solana address of admin wallet
+
+  // Meteora Admin Wallet (for custodial liquidity provision)
+  // This wallet provides liquidity on behalf of agents - address is NOT exposed to agents
+  KNOT_METEORA_ADMIN_KEY_ID: str({ default: "" }),  // Turnkey sub-org ID for admin wallet
+  KNOT_METEORA_ADMIN_WALLET_ADDRESS: str({ default: "" }),  // Solana address of admin wallet
+
   // Stats (private endpoint)
   STATS_API_SECRET: str(),
   STATS_TOKEN_TTL_SECONDS: num({ default: 300 }),

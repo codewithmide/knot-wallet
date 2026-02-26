@@ -99,6 +99,13 @@ stats.get("/", async (c) => {
       deposits: toNumber(statsCache.totalDeposits),
       depositVolume: toNumber(statsCache.totalDepositVolume),
       depositVolumeUsd: toNumber(statsCache.totalDepositVolumeUsd),
+      // Liquidity Provision (Meteora DLMM)
+      liquidityAdds: toNumber(statsCache.totalLiquidityAdds),
+      liquidityRemoves: toNumber(statsCache.totalLiquidityRemoves),
+      rewardsClaimed: toNumber(statsCache.totalRewardsClaimed),
+      // Prediction Markets (Kalshi)
+      predictionOrders: toNumber(statsCache.totalPredictionOrders),
+      predictionVolume: toNumber(statsCache.totalPredictionVolume),
     };
 
     return success(c, "Stats retrieved successfully.", {

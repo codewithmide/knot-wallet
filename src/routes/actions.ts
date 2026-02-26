@@ -6,6 +6,15 @@ import { transferSOL, transferSPLToken } from "../actions/transfer.js";
 import { trade } from "../actions/trade.js";
 import { getBalances } from "../utils/balances.js";
 import { exportWalletPrivateKey, exportWalletSeedPhrase } from "../actions/export.js";
+import {
+  listPools,
+  getPoolInfo,
+  getAgentPositions,
+  addLiquidity,
+  removeLiquidity,
+  claimRewards,
+  isMeteoraAdminConfigured,
+} from "../services/liquidity.js";
 import { db } from "../db/prisma.js";
 import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
@@ -196,5 +205,137 @@ actions.post("/actions/export-seed-phrase", async (c) => {
     warning: "Keep this seed phrase secure. Never share it with anyone.",
   });
 });
+
+// ============================================================================
+// Liquidity Provision (Meteora DLMM)
+// ============================================================================
+
+// GET /wallets/me/pools
+// List available DLMM pools
+actions.get("/pools", async (c) => {
+  const tokenX = c.req.query("tokenX");
+  const tokenY = c.req.query("tokenY");
+  const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!) : 50;
+
+  const pools = await listPools({ tokenX, tokenY, limit });
+  return success(c, "Pools retrieved successfully.", { pools });
+});
+
+// GET /wallets/me/pools/:address
+// Get detailed info about a specific pool
+actions.get("/pools/:address", async (c) => {
+  const address = c.req.param("address");
+  const poolInfo = await getPoolInfo(address);
+  return success(c, "Pool info retrieved successfully.", poolInfo);
+});
+
+// GET /wallets/me/positions
+// Get user's LP positions (from database - custodial)
+actions.get("/positions", async (c) => {
+  const agent = c.get("agent");
+  const status = c.req.query("status"); // "active", "closed", or omit for all
+
+  if (!isMeteoraAdminConfigured()) {
+    return error(c, "Liquidity provision is not configured", 503);
+  }
+
+  const positions = await getAgentPositions(agent.id, status ? { status } : undefined);
+  return success(c, "Positions retrieved successfully.", { positions });
+});
+
+// POST /wallets/me/actions/add-liquidity
+// Add liquidity to a DLMM pool (custodial: agent transfers tokens to admin, admin provides liquidity)
+actions.post(
+  "/actions/add-liquidity",
+  zValidator(
+    "json",
+    z.object({
+      pool: z.string().min(32).max(44),
+      amountX: z.number().positive(),
+      amountY: z.number().positive().optional(),
+      strategy: z.enum(["spot", "curve", "bidAsk"]).default("spot"),
+      rangeWidth: z.number().int().min(1).max(100).default(10),
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const { pool, amountX, amountY, strategy, rangeWidth } = c.req.valid("json");
+
+    if (!isMeteoraAdminConfigured()) {
+      return error(c, "Liquidity provision is not configured", 503);
+    }
+
+    const result = await addLiquidity(
+      agent.id,
+      agent.solanaAddress,
+      agent.turnkeySubOrgId,
+      pool,
+      amountX,
+      amountY,
+      strategy,
+      rangeWidth
+    );
+
+    return success(c, "Liquidity added successfully. A 1% entry fee applies.", result);
+  }
+);
+
+// POST /wallets/me/actions/remove-liquidity
+// Remove liquidity from a DLMM position (custodial: admin removes, deducts 1% fee, transfers to agent)
+actions.post(
+  "/actions/remove-liquidity",
+  zValidator(
+    "json",
+    z.object({
+      positionId: z.string().uuid(), // Database position ID (not on-chain pubkey)
+      percentage: z.number().int().min(1).max(100).default(100),
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const { positionId, percentage } = c.req.valid("json");
+
+    if (!isMeteoraAdminConfigured()) {
+      return error(c, "Liquidity provision is not configured", 503);
+    }
+
+    const result = await removeLiquidity(
+      agent.id,
+      agent.solanaAddress,
+      positionId,
+      percentage
+    );
+
+    return success(c, "Liquidity removed successfully. A 1% exit fee was deducted.", result);
+  }
+);
+
+// POST /wallets/me/actions/claim-rewards
+// Claim fees and rewards from a DLMM position (custodial: admin claims, deducts 1% platform fee, transfers to agent)
+actions.post(
+  "/actions/claim-rewards",
+  zValidator(
+    "json",
+    z.object({
+      positionId: z.string().uuid(), // Database position ID (not on-chain pubkey)
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const { positionId } = c.req.valid("json");
+
+    if (!isMeteoraAdminConfigured()) {
+      return error(c, "Liquidity provision is not configured", 503);
+    }
+
+    const result = await claimRewards(
+      agent.id,
+      agent.solanaAddress,
+      positionId
+    );
+
+    return success(c, "Rewards claimed successfully. A 1% platform fee was deducted.", result);
+  }
+);
 
 export { actions };

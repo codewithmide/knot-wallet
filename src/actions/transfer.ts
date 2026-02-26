@@ -21,16 +21,24 @@ import { logger } from "../utils/logger.js";
 import { InsufficientFundsError } from "../utils/errors.js";
 import { createAuditLog } from "../utils/audit.js";
 
+// Fee configuration
+const FEE_PERCENTAGE = 0.01; // 1%
+const FLAT_FEE_SOL = 0.001; // ~$0.10-$0.20 depending on SOL price (covers Turnkey costs)
+const FLAT_FEE_SPL = 0.10; // $0.10 for SPL tokens (assuming stablecoin-like)
+
 export interface TransferResult {
   signature: string;
   explorerUrl: string;
   amount: string;
+  amountSent: number; // net amount after fee
+  fee: number; // total fee deducted
   mint: string | null; // null for native SOL
   recipient: string;
 }
 
 /**
  * Transfer native SOL to a recipient address.
+ * Fee (1% + flat fee) is deducted from the transfer amount.
  */
 export async function transferSOL(
   fromAddress: string,
@@ -40,6 +48,19 @@ export async function transferSOL(
   subOrgId: string
 ): Promise<TransferResult> {
   logger.info("Initiating SOL transfer", { fromAddress, toAddress, amountSol });
+
+  // Calculate fee (1% + flat fee)
+  const percentageFee = amountSol * FEE_PERCENTAGE;
+  const totalFee = percentageFee + FLAT_FEE_SOL;
+  const netAmount = amountSol - totalFee;
+
+  if (netAmount <= 0) {
+    throw new Error(
+      `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} SOL (to cover ${totalFee.toFixed(6)} SOL fee)`
+    );
+  }
+
+  logger.info("SOL transfer fees", { amountSol, percentageFee, flatFee: FLAT_FEE_SOL, totalFee, netAmount });
 
   // Policy check BEFORE building any transaction
   await checkPolicy(agentId, {
@@ -51,15 +72,16 @@ export async function transferSOL(
 
   const fromPubkey = new PublicKey(fromAddress);
   const toPubkey = new PublicKey(toAddress);
-  const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
+  const lamports = Math.floor(netAmount * LAMPORTS_PER_SOL);
 
-  // Verify balance
+  // Verify balance (user needs full amount, fee is deducted from what's sent)
   const balance = await connection.getBalance(fromPubkey);
-  const estimatedFee = 10_000; // lamports
-  if (balance < lamports + estimatedFee) {
+  const estimatedNetworkFee = 10_000; // lamports for network fee
+  const requiredBalance = Math.floor(amountSol * LAMPORTS_PER_SOL) + estimatedNetworkFee;
+  if (balance < requiredBalance) {
     throw new InsufficientFundsError(
       `Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, ` +
-        `need ${amountSol + estimatedFee / LAMPORTS_PER_SOL} SOL (including fees)`
+        `need ${requiredBalance / LAMPORTS_PER_SOL} SOL (including network fees)`
     );
   }
 
@@ -88,7 +110,7 @@ export async function transferSOL(
       amount: amountSol,
       to: toAddress,
       status,
-      metadata: { error: String(error) },
+      metadata: { error: String(error), fee: totalFee, netAmount },
     });
     throw error;
   }
@@ -98,18 +120,21 @@ export async function transferSOL(
     agentId,
     action: "transfer",
     asset: "sol",
-    amount: amountSol,
+    amount: netAmount,
     to: toAddress,
     signature,
     status,
+    metadata: { requestedAmount: amountSol, fee: totalFee },
   });
 
-  logger.info("SOL transfer completed", { signature, amountSol, toAddress });
+  logger.info("SOL transfer completed", { signature, amountSol, netAmount, fee: totalFee, toAddress });
 
   return {
     signature,
     explorerUrl: `https://solscan.io/tx/${signature}`,
     amount: `${amountSol} SOL`,
+    amountSent: netAmount,
+    fee: totalFee,
     mint: null,
     recipient: toAddress,
   };
@@ -118,7 +143,7 @@ export async function transferSOL(
 /**
  * Transfer any SPL token to a recipient address.
  * Creates the recipient's token account if it doesn't exist.
- * Automatically fetches token decimals from the mint.
+ * Fee (1% + flat fee) is deducted from the transfer amount.
  */
 export async function transferSPLToken(
   fromAddress: string,
@@ -134,6 +159,19 @@ export async function transferSPLToken(
     mintAddress,
     amount,
   });
+
+  // Calculate fee (1% + flat fee)
+  const percentageFee = amount * FEE_PERCENTAGE;
+  const totalFee = percentageFee + FLAT_FEE_SPL;
+  const netAmount = amount - totalFee;
+
+  if (netAmount <= 0) {
+    throw new Error(
+      `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} tokens (to cover ${totalFee.toFixed(6)} fee)`
+    );
+  }
+
+  logger.info("SPL transfer fees", { amount, percentageFee, flatFee: FLAT_FEE_SPL, totalFee, netAmount });
 
   // Policy check
   await checkPolicy(agentId, {
@@ -168,7 +206,7 @@ export async function transferSPLToken(
   }
 
   const decimals = mintInfo.decimals;
-  const rawAmount = Math.floor(amount * Math.pow(10, decimals));
+  const rawNetAmount = Math.floor(netAmount * Math.pow(10, decimals));
 
   // Get token accounts using the correct program
   const fromTokenAccount = await getAssociatedTokenAddress(
@@ -186,10 +224,11 @@ export async function transferSPLToken(
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  // Verify sender has sufficient balance
+  // Verify sender has sufficient balance (full amount including what becomes fee)
+  const rawFullAmount = Math.floor(amount * Math.pow(10, decimals));
   try {
     const fromAccountInfo = await getAccount(connection, fromTokenAccount, undefined, tokenProgramId);
-    if (Number(fromAccountInfo.amount) < rawAmount) {
+    if (Number(fromAccountInfo.amount) < rawFullAmount) {
       throw new InsufficientFundsError(
         `Insufficient token balance. Have ${Number(fromAccountInfo.amount) / Math.pow(10, decimals)}, need ${amount}`
       );
@@ -222,13 +261,14 @@ export async function transferSPLToken(
   }
 
   // Use transfer_checked for Token-2022 compatibility (required for tokens with extensions)
+  // Transfer net amount (after fee deduction)
   instructions.push(
     createTransferCheckedInstruction(
       fromTokenAccount,
       mintPubkey,
       toTokenAccount,
       fromPubkey,
-      rawAmount,
+      rawNetAmount,
       decimals,
       [],
       tokenProgramId
@@ -257,7 +297,7 @@ export async function transferSPLToken(
       amount,
       to: toAddress,
       status,
-      metadata: { error: String(error), mint: mintAddress },
+      metadata: { error: String(error), mint: mintAddress, fee: totalFee, netAmount },
     });
     throw error;
   }
@@ -266,16 +306,18 @@ export async function transferSPLToken(
     agentId,
     action: "transfer",
     asset: mintAddress,
-    amount,
+    amount: netAmount,
     to: toAddress,
     signature,
     status,
-    metadata: { mint: mintAddress, decimals },
+    metadata: { mint: mintAddress, decimals, requestedAmount: amount, fee: totalFee },
   });
 
   logger.info("SPL token transfer completed", {
     signature,
     amount,
+    netAmount,
+    fee: totalFee,
     mintAddress,
     toAddress,
   });
@@ -284,6 +326,8 @@ export async function transferSPLToken(
     signature,
     explorerUrl: `https://solscan.io/tx/${signature}`,
     amount: `${amount}`,
+    amountSent: netAmount,
+    fee: totalFee,
     mint: mintAddress,
     recipient: toAddress,
   };

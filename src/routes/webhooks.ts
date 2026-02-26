@@ -5,6 +5,7 @@ import { logger } from "../utils/logger.js";
 import { success, error } from "../utils/response.js";
 import { createAuditLog } from "../utils/audit.js";
 import { computeUsdValue, getTokenPriceUsd } from "../utils/pricing.js";
+import { sendDepositNotification } from "../utils/email.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -88,10 +89,25 @@ webhooks.post("/helius", async (c) => {
             },
           });
           depositsProcessed++;
-          logger.info("SOL deposit logged", { 
-            agent: agent.email, 
+          logger.info("SOL deposit logged", {
+            agent: agent.email,
             amount: transfer.amount / 1e9,
             from: transfer.fromUserAccount,
+          });
+
+          // Send deposit notification email (async, doesn't block webhook response)
+          sendDepositNotification(
+            agent.email,
+            solAmount,
+            "SOL",
+            normalizedUsdAmount,
+            tx.signature,
+            transfer.fromUserAccount
+          ).catch((err) => {
+            logger.error("Failed to send deposit notification", {
+              agent: agent.email,
+              error: String(err)
+            });
           });
         }
       }
@@ -129,10 +145,25 @@ webhooks.post("/helius", async (c) => {
             },
           });
           depositsProcessed++;
-          logger.info("Token deposit logged", { 
-            agent: agent.email, 
+          logger.info("Token deposit logged", {
+            agent: agent.email,
             mint: transfer.mint,
             amount: transfer.tokenAmount,
+          });
+
+          // Send deposit notification email (async, doesn't block webhook response)
+          sendDepositNotification(
+            agent.email,
+            tokenAmount,
+            transfer.mint,
+            normalizedUsdAmount,
+            tx.signature,
+            transfer.fromUserAccount
+          ).catch((err) => {
+            logger.error("Failed to send deposit notification", {
+              agent: agent.email,
+              error: String(err)
+            });
           });
         }
       }

@@ -74,5 +74,279 @@ model StatsCache {
   totalDeposits        Int      @default(0)
   totalDepositVolume   Float    @default(0)
   totalDepositVolumeUsd Float   @default(0)
+  // Liquidity Provision (Meteora DLMM)
+  totalLiquidityAdds     Int    @default(0)
+  totalLiquidityRemoves  Int    @default(0)
+  totalRewardsClaimed    Int    @default(0)
+  // Prediction Markets (Kalshi)
+  totalPredictionOrders  Int    @default(0)
+  totalPredictionVolume  Int    @default(0)  // Total contracts traded
   updatedAt            DateTime @updatedAt
+}
+
+// =============================================================================
+// Prediction Markets (Custodial Kalshi Gateway)
+// =============================================================================
+
+// Virtual USD balance for prediction market trading
+model PredictionBalance {
+  id        String   @id @default(uuid())
+  agentId   String   @unique
+  balance   Int      @default(0)  // Balance in USD cents
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  deposits    PredictionDeposit[]
+  withdrawals PredictionWithdrawal[]
+  orders      PredictionOrder[]
+  positions   PredictionPosition[]
+}
+
+// Pending deposit: Created when agent initiates a deposit, before funds are sent
+model PendingPredictionDeposit {
+  id                  String   @id @default(uuid())
+  agentId             String
+  agentWalletAddress  String   // Agent's wallet address (source of funds)
+
+  usdcAmount          Float    // Expected USDC amount
+  usdCents            Int      // Expected USD cents to credit
+
+  expiresAt           DateTime // Deposit must be completed before this time
+  status              String   // "pending", "completed", "expired", "failed"
+
+  // Filled in when deposit is confirmed
+  solanaSignature     String?  // On-chain USDC transfer signature
+  confirmedAt         DateTime?
+
+  createdAt           DateTime @default(now())
+
+  @@index([agentId, status])
+  @@index([status, expiresAt])
+  @@index([solanaSignature])
+}
+
+// Deposit: Agent sends USDC, we credit their prediction balance
+model PredictionDeposit {
+  id                  String   @id @default(uuid())
+  agentId             String
+  predictionBalanceId String
+  predictionBalance   PredictionBalance @relation(fields: [predictionBalanceId], references: [id])
+
+  usdcAmount          Float    // USDC amount deposited
+  usdCents            Int      // USD cents credited (after conversion)
+  solanaSignature     String   @unique // On-chain USDC transfer signature (unique to prevent double-crediting)
+  pendingDepositId    String?  // Reference to the pending deposit that initiated this
+  status              String   // "pending", "confirmed", "failed"
+  createdAt           DateTime @default(now())
+  confirmedAt         DateTime?
+
+  @@index([agentId, status])
+  @@index([createdAt])
+}
+
+// Withdrawal: Agent withdraws prediction balance back to USDC
+model PredictionWithdrawal {
+  id                  String   @id @default(uuid())
+  agentId             String
+  predictionBalanceId String
+  predictionBalance   PredictionBalance @relation(fields: [predictionBalanceId], references: [id])
+
+  usdCents            Int      // USD cents withdrawn
+  usdcAmount          Float    // USDC amount sent
+  solanaSignature     String?  // On-chain USDC transfer signature
+  status              String   // "pending", "processing", "confirmed", "failed"
+  createdAt           DateTime @default(now())
+  processedAt         DateTime?
+
+  @@index([agentId, status])
+  @@index([createdAt])
+}
+
+// Order placed on behalf of agent via our Kalshi account
+model PredictionOrder {
+  id                  String   @id @default(uuid())
+  agentId             String
+  predictionBalanceId String
+  predictionBalance   PredictionBalance @relation(fields: [predictionBalanceId], references: [id])
+
+  // Market info
+  ticker              String   // Kalshi market ticker
+  eventTicker         String?  // Parent event ticker
+  side                String   // "yes" or "no"
+  action              String   // "buy" or "sell"
+
+  // Order details
+  count               Int      // Number of contracts
+  pricePerContract    Int      // Price in cents (1-99)
+  totalCost           Int      // Total cost in cents (count * price + fees)
+  feeCents            Int      // Our 1% fee in cents
+
+  // Kalshi order info
+  kalshiOrderId       String?  // Order ID from Kalshi
+  kalshiFillPrice     Int?     // Actual fill price from Kalshi
+
+  status              String   // "pending", "submitted", "filled", "partial", "failed", "canceled"
+  errorMessage        String?
+
+  createdAt           DateTime @default(now())
+  filledAt            DateTime?
+
+  @@index([agentId, status])
+  @@index([ticker])
+  @@index([createdAt])
+}
+
+// Agent's virtual position in a market (aggregated from orders)
+model PredictionPosition {
+  id                  String   @id @default(uuid())
+  agentId             String
+  predictionBalanceId String
+  predictionBalance   PredictionBalance @relation(fields: [predictionBalanceId], references: [id])
+
+  ticker              String   // Kalshi market ticker
+  eventTicker         String?  // Parent event ticker
+  side                String   // "yes" or "no"
+
+  quantity            Int      // Number of contracts held (can be negative if sold)
+  averageCost         Int      // Average cost basis in cents per contract
+  totalCost           Int      // Total cost basis in cents
+
+  // Settlement
+  settled             Boolean  @default(false)
+  settlementResult    String?  // "won", "lost", null if not settled
+  settlementPayout    Int?     // Payout in cents (100 per contract if won, 0 if lost)
+  settledAt           DateTime?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([agentId, ticker, side])
+  @@index([agentId, settled])
+  @@index([ticker, settled])
+}
+
+// =============================================================================
+// Liquidity Provision (Custodial Meteora Gateway)
+// =============================================================================
+
+// Deposit: Agent sends tokens to admin for liquidity provision
+model LiquidityDeposit {
+  id                  String   @id @default(uuid())
+  agentId             String
+
+  poolAddress         String   // Meteora DLMM pool address
+  tokenMint           String   // Token mint address
+  tokenSymbol         String?  // Token symbol (e.g., "SOL", "USDC")
+  amount              Float    // Amount deposited (human units)
+  amountRaw           String   // Amount in raw units (lamports)
+
+  solanaSignature     String   @unique // On-chain transfer signature
+  status              String   // "pending", "confirmed", "failed"
+  createdAt           DateTime @default(now())
+  confirmedAt         DateTime?
+
+  @@index([agentId, status])
+  @@index([poolAddress])
+  @@index([createdAt])
+}
+
+// Withdrawal: Admin sends tokens/proceeds back to agent
+model LiquidityWithdrawal {
+  id                  String   @id @default(uuid())
+  agentId             String
+
+  poolAddress         String   // Meteora DLMM pool address
+  positionId          String?  // Reference to the position
+  tokenMint           String   // Token mint address
+  tokenSymbol         String?  // Token symbol
+  amount              Float    // Amount withdrawn (human units)
+  amountRaw           String   // Amount in raw units
+
+  feeBps              Int      @default(0) // Fee in basis points
+  feeAmount           Float    @default(0) // Fee deducted
+
+  solanaSignature     String?  // On-chain transfer signature
+  status              String   // "pending", "processing", "confirmed", "failed"
+  createdAt           DateTime @default(now())
+  processedAt         DateTime?
+
+  @@index([agentId, status])
+  @@index([poolAddress])
+  @@index([createdAt])
+}
+
+// Position: Admin's LP position on behalf of agent
+model LiquidityPosition {
+  id                  String   @id @default(uuid())
+  agentId             String
+
+  poolAddress         String   // Meteora DLMM pool address
+  poolName            String?  // Pool name (e.g., "SOL-USDC")
+  positionPubkey      String   @unique // On-chain position public key
+
+  // Position details
+  strategy            String   // "spot", "curve", "bidAsk"
+  minBinId            Int
+  maxBinId            Int
+
+  // Deposited amounts
+  amountX             Float    // Amount of token X deposited
+  amountY             Float    // Amount of token Y deposited
+  mintX               String   // Token X mint
+  mintY               String   // Token Y mint
+  symbolX             String?  // Token X symbol
+  symbolY             String?  // Token Y symbol
+
+  // Fees
+  entryFeeBps         Int      @default(100) // 1% entry fee
+  exitFeeBps          Int      @default(100) // 1% exit fee
+
+  // Status
+  status              String   // "active", "closed", "failed"
+  closedAt            DateTime?
+
+  // Deposit signatures (for tracking)
+  depositSignatureX   String?
+  depositSignatureY   String?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([agentId, positionPubkey])
+  @@index([agentId, status])
+  @@index([poolAddress])
+  @@index([status])
+}
+
+// Rewards claimed from positions
+model LiquidityRewardClaim {
+  id                  String   @id @default(uuid())
+  agentId             String
+
+  positionId          String   // Reference to LiquidityPosition
+  poolAddress         String
+
+  // Claimed amounts
+  feeX                Float    @default(0)
+  feeY                Float    @default(0)
+  rewardOne           Float    @default(0)
+  rewardTwo           Float    @default(0)
+
+  // Our fee deduction
+  platformFeeBps      Int      @default(100) // 1% of rewards
+  platformFeeX        Float    @default(0)
+  platformFeeY        Float    @default(0)
+
+  // Transfer to agent
+  solanaSignatureX    String?  // Transfer of token X to agent
+  solanaSignatureY    String?  // Transfer of token Y to agent
+
+  status              String   // "pending", "confirmed", "failed"
+  createdAt           DateTime @default(now())
+  processedAt         DateTime?
+
+  @@index([agentId])
+  @@index([positionId])
+  @@index([createdAt])
 }

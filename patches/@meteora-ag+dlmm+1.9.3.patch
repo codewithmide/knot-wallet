@@ -1,0 +1,173 @@
+diff --git a/node_modules/@meteora-ag/dlmm/dist/index.mjs b/node_modules/@meteora-ag/dlmm/dist/index.mjs
+index e41f1a9..3b5d726 100644
+--- a/node_modules/@meteora-ag/dlmm/dist/index.mjs
++++ b/node_modules/@meteora-ag/dlmm/dist/index.mjs
+@@ -1,5 +1,15 @@
+ // src/dlmm/index.ts
+-import { BN as BN21 } from "@coral-xyz/anchor";
++import BN from 'bn.js';
++const BN2 = BN;
++const BN5 = BN;
++const BN6 = BN;
++const BN7 = BN;
++const BN8 = BN;
++const BN11 = BN;
++const BN17 = BN;
++const BN18 = BN;
++const BN21 = BN;
++// BN imported from bn.js
+ import {
+   AccountLayout,
+   NATIVE_MINT as NATIVE_MINT2,
+@@ -23,7 +33,7 @@ import Decimal9 from "decimal.js";
+ 
+ // src/dlmm/constants/index.ts
+ import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+-import { BN } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ 
+ // src/dlmm/idl/idl.json
+ var idl_default = {
+@@ -11284,7 +11294,7 @@ var DlmmSdkError = class extends Error {
+ };
+ 
+ // src/dlmm/helpers/index.ts
+-import { AnchorProvider, BN as BN18, Program as Program2 } from "@coral-xyz/anchor";
++import { AnchorProvider, Program as Program2 } from "@coral-xyz/anchor";
+ import {
+   ASSOCIATED_TOKEN_PROGRAM_ID,
+   NATIVE_MINT,
+@@ -11304,9 +11314,7 @@ import {
+ } from "@solana/web3.js";
+ 
+ // src/dlmm/types/index.ts
+-import {
+-  BN as BN2
+-} from "@coral-xyz/anchor";
++// BN imported from bn.js
+ import {
+   PublicKey as PublicKey2
+ } from "@solana/web3.js";
+@@ -11418,15 +11426,15 @@ var MEMO_PROGRAM_ID = new PublicKey2(
+ var REBALANCE_POSITION_PADDING = Array(31).fill(0);
+ 
+ // src/dlmm/helpers/binArray.ts
+-import { BN as BN8 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ import { PublicKey as PublicKey5 } from "@solana/web3.js";
+ 
+ // src/dlmm/helpers/math.ts
+-import { BN as BN7 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ import Decimal5 from "decimal.js";
+ 
+ // src/dlmm/helpers/u64xu64_math.ts
+-import BN3 from "bn.js";
++const BN3 = BN; // from bn.js
+ var MAX_EXPONENTIAL = new BN3(524288);
+ var ONE = new BN3(1).shln(SCALE_OFFSET);
+ var MAX = new BN3(2).pow(new BN3(128)).sub(new BN3(1));
+@@ -11530,12 +11538,12 @@ function pow(base, exp) {
+ }
+ 
+ // src/dlmm/helpers/weight.ts
+-import { BN as BN6 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ import gaussian from "gaussian";
+ import Decimal4 from "decimal.js";
+ 
+ // src/dlmm/helpers/weightToAmounts.ts
+-import { BN as BN5 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ import Decimal3 from "decimal.js";
+ 
+ // src/dlmm/helpers/token_2022.ts
+@@ -11554,7 +11562,7 @@ import {
+ import {
+   PublicKey as PublicKey3
+ } from "@solana/web3.js";
+-import BN4 from "bn.js";
++const BN4 = BN; // from bn.js
+ async function getMultipleMintsExtraAccountMetasForTransferHook(connection, mintAddressesWithAccountInfo) {
+   const extraAccountMetas = await Promise.all(
+     mintAddressesWithAccountInfo.map(
+@@ -13151,10 +13159,10 @@ var getSimulationComputeUnits = async (connection, instructions, payer, lookupTa
+ };
+ 
+ // src/dlmm/helpers/positions/index.ts
+-import BN10 from "bn.js";
++const BN10 = BN; // from bn.js
+ 
+ // src/dlmm/helpers/positions/wrapper.ts
+-import BN9 from "bn.js";
++const BN9 = BN; // from bn.js
+ function combineBaseAndExtendedPositionBinData(base, extended) {
+   const combinedLiquidityShares = base.liquidityShares;
+   const combinedRewardInfos = base.rewardInfos;
+@@ -13439,11 +13447,11 @@ function decodeExtendedPosition(base, program, bytes) {
+ 
+ // src/dlmm/helpers/rebalance/rebalancePosition.ts
+ import { SYSVAR_CLOCK_PUBKEY } from "@solana/web3.js";
+-import BN12 from "bn.js";
++const BN12 = BN; // from bn.js
+ import Decimal6 from "decimal.js";
+ 
+ // src/dlmm/helpers/fee.ts
+-import { BN as BN11 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ function getBaseFee(binStep, sParameter) {
+   return new BN11(sParameter.baseFactor).mul(new BN11(binStep)).mul(new BN11(10)).mul(new BN11(10).pow(new BN11(sParameter.baseFeePowerFactor)));
+ }
+@@ -14335,10 +14343,10 @@ function getRebalanceBinArrayIndexesAndBitmapCoverage(adds, removes, activeId, p
+ }
+ 
+ // src/dlmm/helpers/rebalance/liquidity_strategy/index.ts
+-import BN16 from "bn.js";
++const BN16 = BN; // from bn.js
+ 
+ // src/dlmm/helpers/rebalance/liquidity_strategy/bidAsk.ts
+-import BN13 from "bn.js";
++const BN13 = BN; // from bn.js
+ function findBaseDeltaY(amountY, minDeltaId, maxDeltaId) {
+   if (minDeltaId.gt(maxDeltaId) || amountY.lte(new BN13(0))) {
+     return new BN13(0);
+@@ -14501,7 +14509,7 @@ var BidAskStrategyParameterBuilder = class {
+ };
+ 
+ // src/dlmm/helpers/rebalance/liquidity_strategy/curve.ts
+-import BN14 from "bn.js";
++const BN14 = BN; // from bn.js
+ function findBaseY0(amountY, minDeltaId, maxDeltaId) {
+   if (minDeltaId.gt(maxDeltaId) || amountY.lte(new BN14(0))) {
+     return new BN14(0);
+@@ -14655,7 +14663,7 @@ var CurveStrategyParameterBuilder = class {
+ };
+ 
+ // src/dlmm/helpers/rebalance/liquidity_strategy/spot.ts
+-import BN15 from "bn.js";
++const BN15 = BN; // from bn.js
+ function findY0(amountY, minDeltaId, maxDeltaId) {
+   if (minDeltaId.gt(maxDeltaId) || amountY.lte(new BN15(0)) || amountY.isZero()) {
+     return new BN15(0);
+@@ -15014,7 +15022,7 @@ function getTokenProgramId(lbPairState) {
+ }
+ 
+ // src/dlmm/helpers/strategy.ts
+-import { BN as BN17 } from "@coral-xyz/anchor";
++// BN imported from bn.js
+ var DEFAULT_MAX_WEIGHT = 2e3;
+ var DEFAULT_MIN_WEIGHT = 200;
+ function toWeightSpotBalanced(minBinId, maxBinId) {
+@@ -16140,10 +16148,10 @@ var positionV2Filter = () => {
+ };
+ 
+ // src/dlmm/helpers/rebalance/strategy/balanced.ts
+-import BN20 from "bn.js";
++const BN20 = BN; // from bn.js
+ 
+ // src/dlmm/helpers/rebalance/strategy/index.ts
+-import BN19 from "bn.js";
++const BN19 = BN; // from bn.js
+ var MAX_BPS = new BN19(BASIS_POINT_MAX);
+ function capBps(bps) {
+   return bps.lt(new BN19(0)) ? new BN19(0) : bps.gt(MAX_BPS) ? new BN19(MAX_BPS) : bps;

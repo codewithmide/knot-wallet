@@ -9,6 +9,8 @@ import { policyRoutes } from "./routes/policy.js";
 import { tokens } from "./routes/tokens.js";
 import { webhooks } from "./routes/webhooks.js";
 import { stats } from "./routes/stats.js";
+import { predictions } from "./routes/predictions.js";
+import { admin } from "./routes/admin.js";
 import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { AppError } from "./utils/errors.js";
@@ -45,6 +47,8 @@ app.route("/wallets/me/policy", policyRoutes);
 app.route("/tokens", tokens);
 app.route("/webhooks", webhooks);
 app.route("/stats", stats);
+app.route("/predictions", predictions);
+app.route("/admin", admin);
 
 // 404 handler
 app.notFound((c) => error(c, "Resource not found.", 404));

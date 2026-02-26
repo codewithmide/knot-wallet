@@ -11,12 +11,19 @@ import { createAuditLog } from "../utils/audit.js";
 // Jupiter Ultra API (RPC-less, handles everything)
 const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
 
+// Fee configuration
+const FEE_PERCENTAGE = 0.01; // 1%
+const FLAT_FEE_TOKEN = 0.10; // $0.10 in token terms (for stablecoins)
+const FLAT_FEE_SOL = 0.001; // ~$0.10-$0.20 for SOL
+
 export interface TradeResult {
   signature: string;
   explorerUrl: string;
   inputMint: string;
   outputMint: string;
   inputAmount: string;
+  inputAmountSwapped: number; // net amount after fee
+  fee: number; // fee deducted from input
   outputAmount: string;
   priceImpact: string;
 }
@@ -61,7 +68,23 @@ export async function trade(
 
   // Get token decimals for amount conversion
   const inputDecimals = fromResolved.decimals ?? await getTokenDecimals(inputMint);
-  const amountLamports = Math.floor(amount * Math.pow(10, inputDecimals));
+
+  // Calculate fee (1% + flat fee in input token terms)
+  const isInputSol = inputMint === "So11111111111111111111111111111111111111112";
+  const flatFee = isInputSol ? FLAT_FEE_SOL : FLAT_FEE_TOKEN;
+  const percentageFee = amount * FEE_PERCENTAGE;
+  const totalFee = percentageFee + flatFee;
+  const netAmount = amount - totalFee;
+
+  if (netAmount <= 0) {
+    throw new TradeError(
+      `Amount too small. Minimum swap: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} ${fromResolved.symbol} (to cover ${totalFee.toFixed(6)} fee)`
+    );
+  }
+
+  logger.info("Trade fees", { amount, percentageFee, flatFee, totalFee, netAmount });
+
+  const amountLamports = Math.floor(netAmount * Math.pow(10, inputDecimals));
 
   const jupiterHeaders = {
     "Content-Type": "application/json",
@@ -131,7 +154,7 @@ export async function trade(
   try {
     signedTransaction = await signTransaction(transaction, agentAddress, subOrgId);
   } catch (error) {
-    await logTradeError(agentId, fromResolved.symbol, toResolved.symbol, amount, inputMint, outputMint, error);
+    await logTradeError(agentId, fromResolved.symbol, toResolved.symbol, netAmount, inputMint, outputMint, error, { requestedAmount: amount, fee: totalFee });
     throw error;
   }
 
@@ -155,13 +178,14 @@ export async function trade(
 
   if (executeResponse.status === "Failed" || executeResponse.error) {
     await logTradeError(
-      agentId, 
-      fromResolved.symbol, 
-      toResolved.symbol, 
-      amount, 
-      inputMint, 
-      outputMint, 
-      new Error(executeResponse.error || "Execution failed")
+      agentId,
+      fromResolved.symbol,
+      toResolved.symbol,
+      netAmount,
+      inputMint,
+      outputMint,
+      new Error(executeResponse.error || "Execution failed"),
+      { requestedAmount: amount, fee: totalFee }
     );
     throw new TradeError(`Trade execution failed: ${executeResponse.error || "Unknown error"}`);
   }
@@ -177,13 +201,15 @@ export async function trade(
     agentId,
     action: "trade",
     asset: fromResolved.symbol,
-    amount,
+    amount: netAmount,
     to: toResolved.symbol,
     signature,
     status: "confirmed",
     metadata: {
       inputMint,
       outputMint,
+      requestedAmount: amount,
+      fee: totalFee,
       outputAmount: parseFloat(outputAmount),
       priceImpact: orderResponse.priceImpact || orderResponse.priceImpactPct,
       router: orderResponse.router,
@@ -200,6 +226,8 @@ export async function trade(
     inputMint,
     outputMint,
     inputAmount: `${amount} ${fromResolved.symbol}`,
+    inputAmountSwapped: netAmount,
+    fee: totalFee,
     outputAmount: `${outputAmount} ${toResolved.symbol}`,
     priceImpact: `${orderResponse.priceImpact || orderResponse.priceImpactPct || 0}%`,
   };
@@ -213,7 +241,8 @@ async function logTradeError(
   amount: number,
   inputMint: string,
   outputMint: string,
-  error: unknown
+  error: unknown,
+  feeInfo?: { requestedAmount: number; fee: number }
 ): Promise<void> {
   await createAuditLog({
     agentId,
@@ -226,6 +255,7 @@ async function logTradeError(
       inputMint,
       outputMint,
       error: String(error),
+      ...(feeInfo && { requestedAmount: feeInfo.requestedAmount, fee: feeInfo.fee }),
     },
   });
 }
