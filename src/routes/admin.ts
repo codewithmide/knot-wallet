@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
 import { createDecipheriv } from "crypto";
 import { db } from "../db/prisma.js";
 import { config } from "../config.js";
@@ -6,6 +8,9 @@ import { error, success } from "../utils/response.js";
 import { connection } from "../turnkey/signer.js";
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddress, getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { startAdminOtpFlow, completeAdminOtpFlow, verifyAdminToken } from "../auth/turnkey-auth.js";
+import { logger } from "../utils/logger.js";
+import { AppError } from "../utils/errors.js";
 
 const admin = new Hono();
 
@@ -55,11 +60,7 @@ function decryptAdminToken(token: string, key: Buffer): AdminTokenPayload {
   return payload;
 }
 
-function verifyAdminAuth(token: string | undefined): string | null {
-  if (!token) {
-    return "Missing admin token";
-  }
-
+function verifyLegacyAdminAuth(token: string): string | null {
   try {
     const key = decodeAdminSecret();
     const payload = decryptAdminToken(token, key);
@@ -75,22 +76,116 @@ function verifyAdminAuth(token: string | undefined): string | null {
     }
 
     return null;
-  } catch (err) {
-    return `Invalid admin token: ${err}`;
+  } catch {
+    return "Invalid legacy admin token";
   }
 }
 
-// Admin auth middleware
-admin.use("*", async (c, next) => {
-  const token = c.req.header(ADMIN_TOKEN_HEADER);
-  const errorMessage = verifyAdminAuth(token);
+// =============================================================================
+// Admin Authentication Routes (no middleware - public)
+// =============================================================================
 
-  if (errorMessage) {
-    return error(c, "Unauthorized admin request.", 401, { reason: errorMessage });
+// POST /admin/auth/start
+// Admin provides email, server sends OTP (only for whitelisted admin emails)
+admin.post(
+  "/auth/start",
+  zValidator("json", z.object({ email: z.string().email() })),
+  async (c) => {
+    const { email } = c.req.valid("json");
+
+    logger.info("Admin login start requested", { email });
+
+    try {
+      const { otpId } = await startAdminOtpFlow(email);
+
+      return success(c, "OTP sent to your email. Check your inbox.", {
+        otpId,
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        logger.warn("Admin login start failed", { email, error: err.message });
+        return error(c, err.message, err.statusCode);
+      }
+
+      logger.error("Admin login start failed", { email, error: String(err) });
+      return error(c, "Failed to send OTP. Please try again.", 500);
+    }
+  }
+);
+
+// POST /admin/auth/complete
+// Admin provides OTP, server verifies and returns admin session token
+admin.post(
+  "/auth/complete",
+  zValidator(
+    "json",
+    z.object({
+      email: z.string().email(),
+      otpId: z.string().min(1),
+      otpCode: z.string().length(6),
+    })
+  ),
+  async (c) => {
+    const { email, otpId, otpCode } = c.req.valid("json");
+
+    logger.info("Admin login complete requested", { email });
+
+    try {
+      const result = await completeAdminOtpFlow(email, otpId, otpCode);
+
+      logger.info("Admin authenticated", { email });
+
+      return success(c, "Admin authentication successful.", {
+        adminToken: result.adminToken,
+        email: result.email,
+      });
+    } catch (err) {
+      logger.error("Admin login complete failed", { email, error: String(err) });
+
+      if (err instanceof AppError) {
+        return error(c, err.message, err.statusCode);
+      }
+
+      return error(c, "Authentication failed. Please try again.", 500);
+    }
+  }
+);
+
+// =============================================================================
+// Admin Auth Middleware (for protected routes below)
+// Supports both JWT tokens (from OTP flow) and legacy encrypted tokens
+// =============================================================================
+
+admin.use("/predictions/*", verifyAdminMiddleware);
+admin.use("/liquidity/*", verifyAdminMiddleware);
+admin.use("/agents/*", verifyAdminMiddleware);
+admin.use("/transactions/*", verifyAdminMiddleware);
+admin.use("/dashboard", verifyAdminMiddleware);
+
+async function verifyAdminMiddleware(c: any, next: () => Promise<void>) {
+  const token = c.req.header(ADMIN_TOKEN_HEADER);
+
+  if (!token) {
+    return error(c, "Missing admin token.", 401);
   }
 
-  await next();
-});
+  // Try JWT token first (from email OTP flow)
+  try {
+    const payload = await verifyAdminToken(token);
+    c.set("adminEmail", payload.email);
+    return next();
+  } catch {
+    // JWT verification failed, try legacy encrypted token
+  }
+
+  // Try legacy encrypted token
+  const legacyError = verifyLegacyAdminAuth(token);
+  if (legacyError) {
+    return error(c, "Unauthorized admin request.", 401, { reason: legacyError });
+  }
+
+  return next();
+}
 
 // =============================================================================
 // Failed Transfers (Critical - needs manual intervention)
@@ -448,42 +543,117 @@ admin.get("/predictions/wallet", async (c) => {
 // =============================================================================
 
 // GET /admin/predictions/balances
-// View all agent prediction balances
+// View all agents with prediction activity (deposits, orders, positions)
+// Note: The "balance" field may be 0 for agents using direct buy/sell flow
 admin.get("/predictions/balances", async (c) => {
   try {
-    const balances = await db.predictionBalance.findMany({
-      where: { balance: { gt: 0 } },
-      orderBy: { balance: "desc" },
+    logger.info("Fetching prediction activity by agent");
+
+    // Get all agents who have any prediction activity
+    // 1. Agents with prediction balance records
+    // 2. Agents with deposits
+    // 3. Agents with orders
+    // 4. Agents with positions
+    const [balanceRecords, depositsByAgent, ordersByAgent, positionsByAgent] = await Promise.all([
+      db.predictionBalance.findMany({
+        orderBy: { updatedAt: "desc" },
+      }),
+      db.predictionDeposit.groupBy({
+        by: ["agentId"],
+        _sum: { usdcAmount: true },
+        _count: true,
+      }),
+      db.predictionOrder.groupBy({
+        by: ["agentId"],
+        _sum: { totalCost: true, feeCents: true },
+        _count: true,
+      }),
+      db.predictionPosition.groupBy({
+        by: ["agentId"],
+        where: { settled: false },
+        _sum: { totalCost: true, quantity: true },
+        _count: true,
+      }),
+    ]);
+
+    // Create maps for quick lookup
+    const balanceMap = new Map(balanceRecords.map(b => [b.agentId, b]));
+    const depositsMap = new Map(depositsByAgent.map(d => [d.agentId, d]));
+    const ordersMap = new Map(ordersByAgent.map(o => [o.agentId, o]));
+    const positionsMap = new Map(positionsByAgent.map(p => [p.agentId, p]));
+
+    // Get all unique agent IDs with any activity
+    const allAgentIds = new Set([
+      ...balanceRecords.map(b => b.agentId),
+      ...depositsByAgent.map(d => d.agentId),
+      ...ordersByAgent.map(o => o.agentId),
+      ...positionsByAgent.map(p => p.agentId),
+    ]);
+
+    logger.info("Found agents with prediction activity", {
+      uniqueAgents: allAgentIds.size,
+      balanceRecords: balanceRecords.length,
+      agentsWithDeposits: depositsByAgent.length,
+      agentsWithOrders: ordersByAgent.length,
+      agentsWithPositions: positionsByAgent.length,
     });
 
-    // Get unique agent IDs and fetch agent info
-    const agentIds = [...new Set(balances.map((b) => b.agentId))];
+    // Fetch agent info
     const agents = await db.agent.findMany({
-      where: { id: { in: agentIds } },
+      where: { id: { in: Array.from(allAgentIds) } },
       select: { id: true, email: true, solanaAddress: true },
     });
-    const agentMap = new Map(agents.map((a) => [a.id, a]));
+    const agentMap = new Map(agents.map(a => [a.id, a]));
 
-    const totalBalance = await db.predictionBalance.aggregate({
-      _sum: { balance: true },
+    // Build combined activity data
+    const agentActivities = Array.from(allAgentIds).map(agentId => {
+      const agent = agentMap.get(agentId);
+      const balance = balanceMap.get(agentId);
+      const deposits = depositsMap.get(agentId);
+      const orders = ordersMap.get(agentId);
+      const positions = positionsMap.get(agentId);
+
+      return {
+        agentId,
+        agentEmail: agent?.email,
+        agentWallet: agent?.solanaAddress,
+        // Internal balance (may be 0 for direct buy/sell flow)
+        internalBalanceCents: balance?.balance || 0,
+        internalBalanceDollars: (balance?.balance || 0) / 100,
+        // Deposit activity
+        totalDepositsUSDC: deposits?._sum.usdcAmount || 0,
+        depositCount: deposits?._count || 0,
+        // Order activity
+        totalOrderVolumeCents: Math.abs(orders?._sum.totalCost || 0),
+        totalFeesPaidCents: orders?._sum.feeCents || 0,
+        orderCount: orders?._count || 0,
+        // Open positions
+        openPositionCount: positions?._count || 0,
+        openPositionCostCents: positions?._sum.totalCost || 0,
+        openContractsCount: positions?._sum.quantity || 0,
+        // Last activity
+        lastActivity: balance?.updatedAt?.toISOString(),
+      };
     });
 
-    return success(c, "Agent balances retrieved.", {
-      count: balances.length,
-      totalBalanceCents: totalBalance._sum.balance || 0,
-      totalBalanceDollars: (totalBalance._sum.balance || 0) / 100,
-      balances: balances.map((b) => {
-        const agent = agentMap.get(b.agentId);
-        return {
-          agentId: b.agentId,
-          agentEmail: agent?.email,
-          balanceCents: b.balance,
-          balanceDollars: b.balance / 100,
-          updatedAt: b.updatedAt.toISOString(),
-        };
-      }),
+    // Sort by total activity (orders + deposits)
+    agentActivities.sort((a, b) => {
+      const aActivity = a.orderCount + a.depositCount;
+      const bActivity = b.orderCount + b.depositCount;
+      return bActivity - aActivity;
+    });
+
+    // Calculate totals
+    const totalInternalBalance = balanceRecords.reduce((sum, b) => sum + b.balance, 0);
+
+    return success(c, "Agent prediction activity retrieved.", {
+      count: agentActivities.length,
+      totalInternalBalanceCents: totalInternalBalance,
+      totalInternalBalanceDollars: totalInternalBalance / 100,
+      agents: agentActivities,
     });
   } catch (err) {
+    logger.error("Failed to retrieve prediction balances", { error: String(err) });
     return error(c, "Failed to retrieve balances.", 500, { error: String(err) });
   }
 });
@@ -993,6 +1163,557 @@ admin.get("/liquidity/wallet", async (c) => {
     });
   } catch (err) {
     return error(c, "Failed to retrieve wallet status.", 500, { error: String(err) });
+  }
+});
+
+// =============================================================================
+// AGENTS MANAGEMENT
+// =============================================================================
+
+// GET /admin/agents
+// List all agents with pagination and filtering
+admin.get("/agents", async (c) => {
+  try {
+    const limit = parseInt(c.req.query("limit") || "100");
+    const offset = parseInt(c.req.query("offset") || "0");
+    const search = c.req.query("search"); // Search by email or wallet address
+    const sortBy = c.req.query("sortBy") || "createdAt"; // createdAt, lastActiveAt, email
+    const sortOrder = c.req.query("sortOrder") || "desc"; // asc, desc
+
+    // Build where clause for search
+    const whereClause = search
+      ? {
+          OR: [
+            { email: { contains: search, mode: "insensitive" as const } },
+            { solanaAddress: { contains: search, mode: "insensitive" as const } },
+            { username: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
+
+    // Build orderBy
+    const orderBy: Record<string, "asc" | "desc"> = {};
+    if (["createdAt", "lastActiveAt", "email", "username"].includes(sortBy)) {
+      orderBy[sortBy] = sortOrder === "asc" ? "asc" : "desc";
+    } else {
+      orderBy.createdAt = "desc";
+    }
+
+    const [agents, totalCount] = await Promise.all([
+      db.agent.findMany({
+        where: whereClause,
+        orderBy,
+        take: limit,
+        skip: offset,
+        include: {
+          policy: true,
+          _count: {
+            select: {
+              auditLogs: true,
+            },
+          },
+        },
+      }),
+      db.agent.count({ where: whereClause }),
+    ]);
+
+    // Get activity stats for each agent
+    const agentIds = agents.map((a) => a.id);
+    const [transferStats, tradeStats] = await Promise.all([
+      db.auditLog.groupBy({
+        by: ["agentId"],
+        where: {
+          agentId: { in: agentIds },
+          action: "transfer",
+          status: "confirmed",
+        },
+        _count: true,
+        _sum: { amount: true },
+      }),
+      db.auditLog.groupBy({
+        by: ["agentId"],
+        where: {
+          agentId: { in: agentIds },
+          action: "trade",
+          status: "confirmed",
+        },
+        _count: true,
+      }),
+    ]);
+
+    const transferMap = new Map(transferStats.map((t) => [t.agentId, t]));
+    const tradeMap = new Map(tradeStats.map((t) => [t.agentId, t]));
+
+    return success(c, "Agents retrieved.", {
+      count: agents.length,
+      totalCount,
+      limit,
+      offset,
+      agents: agents.map((agent) => {
+        const transfers = transferMap.get(agent.id);
+        const trades = tradeMap.get(agent.id);
+        return {
+          id: agent.id,
+          email: agent.email,
+          username: agent.username,
+          solanaAddress: agent.solanaAddress,
+          turnkeyWalletId: agent.turnkeyWalletId,
+          turnkeySubOrgId: agent.turnkeySubOrgId,
+          createdAt: agent.createdAt.toISOString(),
+          updatedAt: agent.updatedAt.toISOString(),
+          lastActiveAt: agent.lastActiveAt.toISOString(),
+          hasPolicy: !!agent.policy,
+          totalTransactions: agent._count.auditLogs,
+          stats: {
+            transfers: {
+              count: transfers?._count || 0,
+              totalAmount: transfers?._sum.amount || 0,
+            },
+            trades: {
+              count: trades?._count || 0,
+            },
+          },
+        };
+      }),
+    });
+  } catch (err) {
+    logger.error("Failed to retrieve agents", { error: String(err) });
+    return error(c, "Failed to retrieve agents.", 500, { error: String(err) });
+  }
+});
+
+// GET /admin/agents/:id
+// Get detailed info for a specific agent
+admin.get("/agents/:id", async (c) => {
+  try {
+    const agentId = c.req.param("id");
+
+    const agent = await db.agent.findUnique({
+      where: { id: agentId },
+      include: {
+        policy: true,
+        auditLogs: {
+          orderBy: { createdAt: "desc" },
+          take: 50,
+        },
+      },
+    });
+
+    if (!agent) {
+      return error(c, "Agent not found.", 404);
+    }
+
+    // Get activity summary
+    const [
+      totalTransfers,
+      totalTrades,
+      recentActivity,
+      predictionOrders,
+      liquidityPositions,
+    ] = await Promise.all([
+      db.auditLog.aggregate({
+        where: { agentId, action: "transfer", status: "confirmed" },
+        _count: true,
+        _sum: { amount: true },
+      }),
+      db.auditLog.aggregate({
+        where: { agentId, action: "trade", status: "confirmed" },
+        _count: true,
+      }),
+      db.auditLog.findMany({
+        where: { agentId },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      db.predictionOrder.count({ where: { agentId } }),
+      db.liquidityPosition.count({ where: { agentId } }),
+    ]);
+
+    // Get on-chain balance
+    let solBalance = 0;
+    let usdcBalance = 0;
+    try {
+      const pubkey = new PublicKey(agent.solanaAddress);
+      solBalance = (await connection.getBalance(pubkey)) / 1e9;
+
+      try {
+        const usdcTokenAccount = await getAssociatedTokenAddress(
+          USDC_MINT,
+          pubkey,
+          false,
+          TOKEN_PROGRAM_ID
+        );
+        const accountInfo = await getAccount(connection, usdcTokenAccount, undefined, TOKEN_PROGRAM_ID);
+        usdcBalance = Number(accountInfo.amount) / 1e6;
+      } catch {
+        // No USDC account
+      }
+    } catch {
+      // Balance fetch failed
+    }
+
+    return success(c, "Agent details retrieved.", {
+      agent: {
+        id: agent.id,
+        email: agent.email,
+        username: agent.username,
+        solanaAddress: agent.solanaAddress,
+        turnkeyWalletId: agent.turnkeyWalletId,
+        turnkeySubOrgId: agent.turnkeySubOrgId,
+        createdAt: agent.createdAt.toISOString(),
+        updatedAt: agent.updatedAt.toISOString(),
+        lastActiveAt: agent.lastActiveAt.toISOString(),
+      },
+      balances: {
+        sol: solBalance,
+        usdc: usdcBalance,
+      },
+      policy: agent.policy?.rules || null,
+      stats: {
+        transfers: {
+          count: totalTransfers._count,
+          totalAmount: totalTransfers._sum.amount || 0,
+        },
+        trades: {
+          count: totalTrades._count,
+        },
+        predictions: {
+          orderCount: predictionOrders,
+        },
+        liquidity: {
+          positionCount: liquidityPositions,
+        },
+      },
+      recentActivity: recentActivity.map((log) => ({
+        id: log.id,
+        action: log.action,
+        asset: log.asset,
+        amount: log.amount,
+        to: log.to,
+        signature: log.signature,
+        status: log.status,
+        createdAt: log.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    logger.error("Failed to retrieve agent details", { error: String(err) });
+    return error(c, "Failed to retrieve agent details.", 500, { error: String(err) });
+  }
+});
+
+// =============================================================================
+// TRANSACTIONS / AUDIT LOGS
+// =============================================================================
+
+// GET /admin/transactions
+// List all transactions (audit logs) across all agents
+admin.get("/transactions", async (c) => {
+  try {
+    const limit = parseInt(c.req.query("limit") || "100");
+    const offset = parseInt(c.req.query("offset") || "0");
+    const action = c.req.query("action"); // transfer, trade, sign_message, deposit, etc.
+    const status = c.req.query("status"); // confirmed, failed, rejected_by_policy
+    const asset = c.req.query("asset"); // sol, usdc, etc.
+    const agentId = c.req.query("agentId");
+
+    const whereClause: Record<string, unknown> = {};
+    if (action) whereClause.action = action;
+    if (status) whereClause.status = status;
+    if (asset) whereClause.asset = asset;
+    if (agentId) whereClause.agentId = agentId;
+
+    const [transactions, totalCount, actionStats] = await Promise.all([
+      db.auditLog.findMany({
+        where: whereClause,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+      }),
+      db.auditLog.count({ where: whereClause }),
+      db.auditLog.groupBy({
+        by: ["action", "status"],
+        _count: true,
+      }),
+    ]);
+
+    // Get agent info for the transactions
+    const agentIds = [...new Set(transactions.map((t) => t.agentId))];
+    const agents = await db.agent.findMany({
+      where: { id: { in: agentIds } },
+      select: { id: true, email: true, solanaAddress: true },
+    });
+    const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+    // Organize action stats
+    const statsSummary: Record<string, { total: number; confirmed: number; failed: number }> = {};
+    for (const stat of actionStats) {
+      if (!statsSummary[stat.action]) {
+        statsSummary[stat.action] = { total: 0, confirmed: 0, failed: 0 };
+      }
+      statsSummary[stat.action].total += stat._count;
+      if (stat.status === "confirmed") {
+        statsSummary[stat.action].confirmed += stat._count;
+      } else if (stat.status === "failed") {
+        statsSummary[stat.action].failed += stat._count;
+      }
+    }
+
+    return success(c, "Transactions retrieved.", {
+      count: transactions.length,
+      totalCount,
+      limit,
+      offset,
+      stats: statsSummary,
+      transactions: transactions.map((tx) => {
+        const agent = agentMap.get(tx.agentId);
+        return {
+          id: tx.id,
+          agentId: tx.agentId,
+          agentEmail: agent?.email,
+          agentWallet: agent?.solanaAddress,
+          action: tx.action,
+          asset: tx.asset,
+          amount: tx.amount,
+          from: tx.from,
+          to: tx.to,
+          signature: tx.signature,
+          status: tx.status,
+          metadata: tx.metadata,
+          createdAt: tx.createdAt.toISOString(),
+        };
+      }),
+    });
+  } catch (err) {
+    logger.error("Failed to retrieve transactions", { error: String(err) });
+    return error(c, "Failed to retrieve transactions.", 500, { error: String(err) });
+  }
+});
+
+// GET /admin/transactions/agent/:agentId
+// Get all transactions for a specific agent
+admin.get("/transactions/agent/:agentId", async (c) => {
+  try {
+    const agentId = c.req.param("agentId");
+    const limit = parseInt(c.req.query("limit") || "100");
+    const offset = parseInt(c.req.query("offset") || "0");
+    const action = c.req.query("action");
+    const status = c.req.query("status");
+
+    // Verify agent exists
+    const agent = await db.agent.findUnique({
+      where: { id: agentId },
+      select: { id: true, email: true, solanaAddress: true },
+    });
+
+    if (!agent) {
+      return error(c, "Agent not found.", 404);
+    }
+
+    const whereClause: Record<string, unknown> = { agentId };
+    if (action) whereClause.action = action;
+    if (status) whereClause.status = status;
+
+    const [transactions, totalCount, stats] = await Promise.all([
+      db.auditLog.findMany({
+        where: whereClause,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+      }),
+      db.auditLog.count({ where: whereClause }),
+      db.auditLog.groupBy({
+        by: ["action"],
+        where: { agentId },
+        _count: true,
+        _sum: { amount: true },
+      }),
+    ]);
+
+    return success(c, "Agent transactions retrieved.", {
+      agent: {
+        id: agent.id,
+        email: agent.email,
+        solanaAddress: agent.solanaAddress,
+      },
+      count: transactions.length,
+      totalCount,
+      limit,
+      offset,
+      actionSummary: stats.map((s) => ({
+        action: s.action,
+        count: s._count,
+        totalAmount: s._sum.amount || 0,
+      })),
+      transactions: transactions.map((tx) => ({
+        id: tx.id,
+        action: tx.action,
+        asset: tx.asset,
+        amount: tx.amount,
+        from: tx.from,
+        to: tx.to,
+        signature: tx.signature,
+        status: tx.status,
+        metadata: tx.metadata,
+        createdAt: tx.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    logger.error("Failed to retrieve agent transactions", { error: String(err) });
+    return error(c, "Failed to retrieve agent transactions.", 500, { error: String(err) });
+  }
+});
+
+// =============================================================================
+// DASHBOARD OVERVIEW
+// =============================================================================
+
+// GET /admin/dashboard
+// Get overall platform stats and health
+admin.get("/dashboard", async (c) => {
+  try {
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      // Agent stats
+      totalAgents,
+      newAgentsToday,
+      newAgentsWeek,
+      activeAgentsToday,
+      // Transaction stats
+      totalTransactions,
+      transactionsToday,
+      transactionsWeek,
+      // Transfer stats
+      transferStats,
+      transfersToday,
+      // Trade stats
+      tradeStats,
+      tradesToday,
+      // Failure stats
+      failedTransactionsToday,
+      rejectedByPolicyToday,
+      // Prediction stats
+      predictionOrderCount,
+      predictionVolumeStats,
+      // Liquidity stats
+      liquidityPositionCount,
+      activePositions,
+    ] = await Promise.all([
+      // Agents
+      db.agent.count(),
+      db.agent.count({ where: { createdAt: { gte: oneDayAgo } } }),
+      db.agent.count({ where: { createdAt: { gte: sevenDaysAgo } } }),
+      db.agent.count({ where: { lastActiveAt: { gte: oneDayAgo } } }),
+      // Transactions
+      db.auditLog.count(),
+      db.auditLog.count({ where: { createdAt: { gte: oneDayAgo } } }),
+      db.auditLog.count({ where: { createdAt: { gte: sevenDaysAgo } } }),
+      // Transfers
+      db.auditLog.aggregate({
+        where: { action: "transfer", status: "confirmed" },
+        _count: true,
+        _sum: { amount: true },
+      }),
+      db.auditLog.aggregate({
+        where: { action: "transfer", status: "confirmed", createdAt: { gte: oneDayAgo } },
+        _count: true,
+        _sum: { amount: true },
+      }),
+      // Trades
+      db.auditLog.aggregate({
+        where: { action: "trade", status: "confirmed" },
+        _count: true,
+      }),
+      db.auditLog.aggregate({
+        where: { action: "trade", status: "confirmed", createdAt: { gte: oneDayAgo } },
+        _count: true,
+      }),
+      // Failures
+      db.auditLog.count({
+        where: { status: "failed", createdAt: { gte: oneDayAgo } },
+      }),
+      db.auditLog.count({
+        where: { status: "rejected_by_policy", createdAt: { gte: oneDayAgo } },
+      }),
+      // Predictions
+      db.predictionOrder.count(),
+      db.predictionOrder.aggregate({
+        _sum: { totalCost: true, feeCents: true },
+      }),
+      // Liquidity
+      db.liquidityPosition.count(),
+      db.liquidityPosition.count({ where: { status: "active" } }),
+    ]);
+
+    // Get top agents by activity (last 30 days)
+    const topAgentsByActivity = await db.auditLog.groupBy({
+      by: ["agentId"],
+      where: { createdAt: { gte: thirtyDaysAgo } },
+      _count: true,
+      orderBy: { _count: { agentId: "desc" } },
+      take: 10,
+    });
+
+    const topAgentIds = topAgentsByActivity.map((a) => a.agentId);
+    const topAgents = await db.agent.findMany({
+      where: { id: { in: topAgentIds } },
+      select: { id: true, email: true },
+    });
+    const topAgentMap = new Map(topAgents.map((a) => [a.id, a]));
+
+    return success(c, "Dashboard stats retrieved.", {
+      agents: {
+        total: totalAgents,
+        newToday: newAgentsToday,
+        newThisWeek: newAgentsWeek,
+        activeToday: activeAgentsToday,
+      },
+      transactions: {
+        total: totalTransactions,
+        today: transactionsToday,
+        thisWeek: transactionsWeek,
+        failedToday: failedTransactionsToday,
+        rejectedByPolicyToday: rejectedByPolicyToday,
+      },
+      transfers: {
+        total: {
+          count: transferStats._count,
+          volume: transferStats._sum.amount || 0,
+        },
+        today: {
+          count: transfersToday._count,
+          volume: transfersToday._sum.amount || 0,
+        },
+      },
+      trades: {
+        total: {
+          count: tradeStats._count,
+        },
+        today: {
+          count: tradesToday._count,
+        },
+      },
+      predictions: {
+        totalOrders: predictionOrderCount,
+        totalVolumeCents: Math.abs(predictionVolumeStats._sum.totalCost || 0),
+        totalFeesCollectedCents: predictionVolumeStats._sum.feeCents || 0,
+      },
+      liquidity: {
+        totalPositions: liquidityPositionCount,
+        activePositions: activePositions,
+      },
+      topAgents: topAgentsByActivity.map((a) => ({
+        agentId: a.agentId,
+        email: topAgentMap.get(a.agentId)?.email,
+        transactionCount: a._count,
+      })),
+    });
+  } catch (err) {
+    logger.error("Failed to retrieve dashboard stats", { error: String(err) });
+    return error(c, "Failed to retrieve dashboard stats.", 500, { error: String(err) });
   }
 });
 

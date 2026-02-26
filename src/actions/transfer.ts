@@ -20,11 +20,19 @@ import { checkPolicy } from "../policy/engine.js";
 import { logger } from "../utils/logger.js";
 import { InsufficientFundsError } from "../utils/errors.js";
 import { createAuditLog } from "../utils/audit.js";
+import { config } from "../config.js";
 
 // Fee configuration
 const FEE_PERCENTAGE = 0.01; // 1%
 const FLAT_FEE_SOL = 0.001; // ~$0.10-$0.20 depending on SOL price (covers Turnkey costs)
 const FLAT_FEE_SPL = 0.10; // $0.10 for SPL tokens (assuming stablecoin-like)
+
+// Fee wallet address (where platform fees are collected)
+const getFeeWalletAddress = (): PublicKey | null => {
+  const address = config.KNOT_FEE_WALLET_ADDRESS;
+  if (!address) return null;
+  return new PublicKey(address);
+};
 
 export interface TransferResult {
   signature: string;
@@ -72,9 +80,11 @@ export async function transferSOL(
 
   const fromPubkey = new PublicKey(fromAddress);
   const toPubkey = new PublicKey(toAddress);
-  const lamports = Math.floor(netAmount * LAMPORTS_PER_SOL);
+  const feeWalletPubkey = getFeeWalletAddress();
+  const netLamports = Math.floor(netAmount * LAMPORTS_PER_SOL);
+  const feeLamports = Math.floor(totalFee * LAMPORTS_PER_SOL);
 
-  // Verify balance (user needs full amount, fee is deducted from what's sent)
+  // Verify balance (user needs full amount including fee)
   const balance = await connection.getBalance(fromPubkey);
   const estimatedNetworkFee = 10_000; // lamports for network fee
   const requiredBalance = Math.floor(amountSol * LAMPORTS_PER_SOL) + estimatedNetworkFee;
@@ -87,10 +97,24 @@ export async function transferSOL(
 
   const { blockhash } = await connection.getLatestBlockhash();
 
+  // Build instructions: transfer to recipient + fee transfer to platform wallet
+  const instructions = [
+    // Main transfer to recipient
+    SystemProgram.transfer({ fromPubkey, toPubkey, lamports: netLamports }),
+  ];
+
+  // Add fee transfer if fee wallet is configured
+  if (feeWalletPubkey && feeLamports > 0) {
+    instructions.push(
+      SystemProgram.transfer({ fromPubkey, toPubkey: feeWalletPubkey, lamports: feeLamports })
+    );
+    logger.info("Adding fee transfer instruction", { feeLamports, feeWallet: feeWalletPubkey.toBase58() });
+  }
+
   const message = new TransactionMessage({
     payerKey: fromPubkey,
     recentBlockhash: blockhash,
-    instructions: [SystemProgram.transfer({ fromPubkey, toPubkey, lamports })],
+    instructions,
   }).compileToV0Message();
 
   const transaction = new VersionedTransaction(message);
@@ -116,6 +140,7 @@ export async function transferSOL(
   }
 
   // Log successful transfer
+  const feeCollected = !!feeWalletPubkey && feeLamports > 0;
   await createAuditLog({
     agentId,
     action: "transfer",
@@ -124,10 +149,15 @@ export async function transferSOL(
     to: toAddress,
     signature,
     status,
-    metadata: { requestedAmount: amountSol, fee: totalFee },
+    metadata: {
+      requestedAmount: amountSol,
+      fee: totalFee,
+      feeCollected,
+      feeWallet: feeCollected ? feeWalletPubkey.toBase58() : null,
+    },
   });
 
-  logger.info("SOL transfer completed", { signature, amountSol, netAmount, fee: totalFee, toAddress });
+  logger.info("SOL transfer completed", { signature, amountSol, netAmount, fee: totalFee, feeCollected, toAddress });
 
   return {
     signature,
@@ -207,6 +237,8 @@ export async function transferSPLToken(
 
   const decimals = mintInfo.decimals;
   const rawNetAmount = Math.floor(netAmount * Math.pow(10, decimals));
+  const rawFeeAmount = Math.floor(totalFee * Math.pow(10, decimals));
+  const feeWalletPubkey = getFeeWalletAddress();
 
   // Get token accounts using the correct program
   const fromTokenAccount = await getAssociatedTokenAddress(
@@ -223,6 +255,18 @@ export async function transferSPLToken(
     tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
+
+  // Get fee wallet token account if configured
+  let feeTokenAccount: PublicKey | null = null;
+  if (feeWalletPubkey) {
+    feeTokenAccount = await getAssociatedTokenAddress(
+      mintPubkey,
+      feeWalletPubkey,
+      false,
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+  }
 
   // Verify sender has sufficient balance (full amount including what becomes fee)
   const rawFullAmount = Math.floor(amount * Math.pow(10, decimals));
@@ -260,8 +304,24 @@ export async function transferSPLToken(
     );
   }
 
-  // Use transfer_checked for Token-2022 compatibility (required for tokens with extensions)
-  // Transfer net amount (after fee deduction)
+  // Create fee wallet token account if needed
+  if (feeWalletPubkey && feeTokenAccount && rawFeeAmount > 0) {
+    const feeAccountInfo = await connection.getAccountInfo(feeTokenAccount);
+    if (!feeAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          fromPubkey, // payer (agent pays for fee wallet ATA creation)
+          feeTokenAccount,
+          feeWalletPubkey,
+          mintPubkey,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+
+  // Transfer net amount to recipient
   instructions.push(
     createTransferCheckedInstruction(
       fromTokenAccount,
@@ -274,6 +334,23 @@ export async function transferSPLToken(
       tokenProgramId
     )
   );
+
+  // Transfer fee to platform wallet
+  if (feeWalletPubkey && feeTokenAccount && rawFeeAmount > 0) {
+    instructions.push(
+      createTransferCheckedInstruction(
+        fromTokenAccount,
+        mintPubkey,
+        feeTokenAccount,
+        fromPubkey,
+        rawFeeAmount,
+        decimals,
+        [],
+        tokenProgramId
+      )
+    );
+    logger.info("Adding SPL fee transfer instruction", { rawFeeAmount, feeWallet: feeWalletPubkey.toBase58() });
+  }
 
   const message = new TransactionMessage({
     payerKey: fromPubkey,
@@ -302,6 +379,7 @@ export async function transferSPLToken(
     throw error;
   }
 
+  const feeCollected = !!feeWalletPubkey && !!feeTokenAccount && rawFeeAmount > 0;
   await createAuditLog({
     agentId,
     action: "transfer",
@@ -310,7 +388,14 @@ export async function transferSPLToken(
     to: toAddress,
     signature,
     status,
-    metadata: { mint: mintAddress, decimals, requestedAmount: amount, fee: totalFee },
+    metadata: {
+      mint: mintAddress,
+      decimals,
+      requestedAmount: amount,
+      fee: totalFee,
+      feeCollected,
+      feeWallet: feeCollected ? feeWalletPubkey!.toBase58() : null,
+    },
   });
 
   logger.info("SPL token transfer completed", {
@@ -318,6 +403,7 @@ export async function transferSPLToken(
     amount,
     netAmount,
     fee: totalFee,
+    feeCollected,
     mintAddress,
     toAddress,
   });

@@ -1,5 +1,5 @@
 import { turnkeyClient } from "../turnkey/client.js";
-import { config } from "../config.js";
+import { config, isAdminEmail } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { db } from "../db/prisma.js";
 import { AuthenticationError, DatabaseUnavailableError } from "../utils/errors.js";
@@ -9,6 +9,9 @@ import { registerHeliusWebhook } from "../utils/helius.js";
 import { incrementTotalAgents } from "../utils/stats-cache.js";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+
+// Admin session expiration (24 hours)
+const ADMIN_SESSION_HOURS = 24;
 
 /**
  * Generate a 6-digit OTP code
@@ -290,5 +293,139 @@ export async function verifySessionToken(token: string): Promise<{
       throw new AuthenticationError("Invalid token");
     }
     throw new AuthenticationError("Token verification failed");
+  }
+}
+
+// =============================================================================
+// Admin Authentication (Email OTP)
+// =============================================================================
+
+/**
+ * Start admin OTP flow - only for whitelisted admin emails
+ */
+export async function startAdminOtpFlow(email: string): Promise<{ otpId: string }> {
+  logger.info("Starting admin OTP flow", { email });
+
+  // Check if email is in admin whitelist
+  if (!isAdminEmail(email)) {
+    logger.warn("Unauthorized admin login attempt", { email });
+    throw new AuthenticationError("Unauthorized email address");
+  }
+
+  const otpCode = generateOtpCode();
+  const expiresAt = new Date(Date.now() + config.OTP_TTL_MINUTES * 60 * 1000);
+
+  // Store OTP in database (reuse same table, different context)
+  const otpRecord = await db.otpCode.create({
+    data: {
+      email,
+      code: otpCode,
+      expiresAt,
+    },
+  });
+
+  logger.info("Admin OTP generated", { email, otpId: otpRecord.id });
+
+  // Send OTP email
+  await sendOtpEmail(email, otpCode);
+
+  return { otpId: otpRecord.id };
+}
+
+/**
+ * Complete admin OTP flow - verify code and issue admin session token
+ */
+export async function completeAdminOtpFlow(
+  email: string,
+  otpId: string,
+  otpCode: string
+): Promise<{ adminToken: string; email: string }> {
+  logger.info("Completing admin OTP flow", { email, otpId });
+
+  // Verify email is in admin whitelist
+  if (!isAdminEmail(email)) {
+    throw new AuthenticationError("Unauthorized email address");
+  }
+
+  // Look up OTP from database
+  const storedOtp = await db.otpCode.findUnique({ where: { id: otpId } });
+  if (!storedOtp) {
+    throw new AuthenticationError("OTP not found or expired");
+  }
+
+  if (storedOtp.email !== email) {
+    throw new AuthenticationError("Email mismatch");
+  }
+
+  if (storedOtp.used) {
+    throw new AuthenticationError("OTP already used");
+  }
+
+  if (new Date() > storedOtp.expiresAt) {
+    await db.otpCode.update({ where: { id: otpId }, data: { used: true } });
+    throw new AuthenticationError("OTP expired");
+  }
+
+  if (storedOtp.code !== otpCode) {
+    throw new AuthenticationError("Invalid OTP code");
+  }
+
+  // Mark OTP as used
+  await db.otpCode.update({ where: { id: otpId }, data: { used: true } });
+
+  // Generate admin JWT token
+  const adminToken = jwt.sign(
+    {
+      email,
+      isAdmin: true,
+      scope: "admin",
+    },
+    config.JWT_SECRET,
+    { expiresIn: `${ADMIN_SESSION_HOURS}h` }
+  );
+
+  logger.info("Admin authenticated successfully", { email });
+
+  return { adminToken, email };
+}
+
+/**
+ * Verify an admin session token (JWT)
+ */
+export async function verifyAdminToken(token: string): Promise<{
+  email: string;
+  isAdmin: boolean;
+}> {
+  try {
+    const payload = jwt.verify(token, config.JWT_SECRET) as {
+      email: string;
+      isAdmin: boolean;
+      scope: string;
+    };
+
+    if (!payload.isAdmin || payload.scope !== "admin") {
+      throw new AuthenticationError("Not an admin token");
+    }
+
+    // Double-check email is still in admin whitelist
+    if (!isAdminEmail(payload.email)) {
+      throw new AuthenticationError("Admin access revoked");
+    }
+
+    return {
+      email: payload.email,
+      isAdmin: true,
+    };
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      throw new AuthenticationError("Admin token expired");
+    }
+    if (error instanceof jwt.JsonWebTokenError) {
+      throw new AuthenticationError("Invalid admin token");
+    }
+    if (error instanceof AuthenticationError) {
+      throw error;
+    }
+    throw new AuthenticationError("Admin token verification failed");
   }
 }

@@ -38,6 +38,10 @@ export const config = cleanEnv(process.env, {
   KNOT_METEORA_ADMIN_KEY_ID: str({ default: "" }),  // Turnkey sub-org ID for admin wallet
   KNOT_METEORA_ADMIN_WALLET_ADDRESS: str({ default: "" }),  // Solana address of admin wallet
 
+  // Fee Collection Wallet (receives platform fees from transfers/trades)
+  // This is where 1% + flat fee goes for all non-custodial transactions
+  KNOT_FEE_WALLET_ADDRESS: str({ default: "" }),  // Solana address for fee collection
+
   // Stats (private endpoint)
   STATS_API_SECRET: str(),
   STATS_TOKEN_TTL_SECONDS: num({ default: 300 }),
@@ -45,6 +49,9 @@ export const config = cleanEnv(process.env, {
   // Auth
   JWT_SECRET: str(),
   OTP_TTL_MINUTES: num({ default: 10 }),
+
+  // Admin emails (comma-separated list of authorized admin emails)
+  ADMIN_EMAILS: str({ default: "codewithmide@gmail.com" }),
 
   // Email
   MAILTRAP_API_KEY: str(),
@@ -68,4 +75,10 @@ export const getSolanaRpcUrl = (): string => {
   }
   const network = config.SOLANA_NETWORK === "devnet" ? "devnet" : "mainnet";
   return `https://${network}.helius-rpc.com/?api-key=${config.HELIUS_API_KEY}`;
+};
+
+// Check if email is an authorized admin
+export const isAdminEmail = (email: string): boolean => {
+  const adminEmails = config.ADMIN_EMAILS.split(",").map((e) => e.trim().toLowerCase());
+  return adminEmails.includes(email.toLowerCase());
 };

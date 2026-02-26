@@ -82,38 +82,26 @@ stats.get("/", async (c) => {
       return error(c, "Unauthorized stats request.", 401, { reason: errorMessage });
     }
 
-    const activeSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const statsCache = await ensureStatsCache();
 
-    const [statsCache, activeAgents] = await Promise.all([
-      ensureStatsCache(),
-      db.agent.count({ where: { lastActiveAt: { gte: activeSince } } }),
-    ]);
-
-    const totals = {
-      agents: toNumber(statsCache.totalAgents),
-      activeAgents,
-      trades: toNumber(statsCache.totalTrades),
-      tradeVolume: toNumber(statsCache.totalTradeVolume),
-      transfers: toNumber(statsCache.totalTransfers),
-      transferVolume: toNumber(statsCache.totalTransferVolume),
-      deposits: toNumber(statsCache.totalDeposits),
-      depositVolume: toNumber(statsCache.totalDepositVolume),
-      depositVolumeUsd: toNumber(statsCache.totalDepositVolumeUsd),
-      // Liquidity Provision (Meteora DLMM)
-      liquidityAdds: toNumber(statsCache.totalLiquidityAdds),
-      liquidityRemoves: toNumber(statsCache.totalLiquidityRemoves),
-      rewardsClaimed: toNumber(statsCache.totalRewardsClaimed),
-      // Prediction Markets (Kalshi)
-      predictionOrders: toNumber(statsCache.totalPredictionOrders),
-      predictionVolume: toNumber(statsCache.totalPredictionVolume),
-    };
+    // Calculate total trades as sum of ALL transaction types:
+    // - Swaps (trades)
+    // - Transfers (withdrawals)
+    // - Deposits
+    // - Liquidity operations (add, remove, claim rewards)
+    // - Prediction market orders (buy/sell)
+    const totalTrades =
+      toNumber(statsCache.totalTrades) +           // swaps
+      toNumber(statsCache.totalTransfers) +        // transfers/withdrawals
+      toNumber(statsCache.totalDeposits) +         // deposits
+      toNumber(statsCache.totalLiquidityAdds) +    // LP adds
+      toNumber(statsCache.totalLiquidityRemoves) + // LP removes
+      toNumber(statsCache.totalRewardsClaimed) +   // LP reward claims
+      toNumber(statsCache.totalPredictionOrders);  // prediction buy/sell
 
     return success(c, "Stats retrieved successfully.", {
-      totals,
-      windows: {
-        activeAgentsDays: 30,
-      },
-      updatedAt: statsCache.updatedAt.toISOString(),
+      totalAgents: toNumber(statsCache.totalAgents),
+      totalTrades,
     });
   } catch (err) {
     return error(c, "Unable to retrieve stats.", 500, { error: String(err) });
