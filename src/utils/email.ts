@@ -92,57 +92,92 @@ export async function sendDepositNotification(
   asset: string,
   usdValue: number | null,
   signature: string,
-  fromAddress?: string
+  _fromAddress?: string
 ): Promise<void> {
   // Format asset name nicely
   const assetName = asset === "sol" ? "SOL" : asset.toUpperCase();
-  const explorerUrl = `https://solscan.io/tx/${signature}`;
 
-  // Format USD value if available
-  const usdDisplay = usdValue ? ` (~$${usdValue.toFixed(2)} USD)` : "";
+  // Format amount with USD value if available
+  const amountDisplay = usdValue
+    ? `${amount.toLocaleString()} ${assetName} (~$${usdValue.toFixed(2)} USD)`
+    : `${amount.toLocaleString()} ${assetName}`;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <h2 style="color: #333; margin-bottom: 10px;">💰 You Got Money!</h2>
-      <p style="color: #666; font-size: 16px; margin-bottom: 30px;">Your Knot wallet just received a deposit.</p>
+  const htmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html dir="ltr" lang="en">
+  <head>
+    <link
+      rel="preload"
+      as="image"
+      href="https://res.cloudinary.com/dqetipg73/image/upload/v1768664846/FossaPay_Logo_3_zna43c.jpg" />
+    <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Inter+Tight:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+    <style>
+      :root{--font-inter-tight: "Inter Tight", Inter, Arial, sans-serif;}
+      body{font-family:var(--font-inter-tight);}
+      a { color:#007ee6; }
+      .social-icon { vertical-align:middle; margin-right:8px; }
+    </style>
+  </head>
+  <body style="background-color:rgb(246,249,252)">
+    <table border="0" width="100%" cellpadding="0" cellspacing="0" align="center" style="background-color:#f6f9fc;">
+      <tr>
+        <td align="center">
+          <table border="0" width="600" cellpadding="0" cellspacing="0" style="background-color:#fff;border:1px solid #e0e0e0;">
+            <tr>
+              <td style="padding:40px 40px 20px 40px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td style="font-size:18px;font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:16px;">Hi ${email},</td>
+                  </tr>
+                  <tr>
+                    <td style="font-size:16px;font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:16px;">
+                      We are pleased to inform you that you just received a deposit.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="font-size:16px; padding:10px 0px; font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:8px;font-weight:bold;">Transaction Details</td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:16px;">
+                        <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Amount:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${amountDisplay}</td></tr>
+                        <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Currency:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${assetName}</td></tr>
+                        <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Transaction ID:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${signature}</td></tr>
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="font-size:16px;font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:16px;">
+                      You can review your transaction history and account balance by logging into your account.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="font-size:16px;font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:16px;">Best regards,</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
 
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; margin-bottom: 25px; text-align: center;">
-        <p style="color: rgba(255,255,255,0.9); margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Received</p>
-        <p style="color: white; margin: 0; font-size: 32px; font-weight: bold;">
-          ${amount.toLocaleString()} ${assetName}
-        </p>
-        ${usdDisplay ? `<p style="color: rgba(255,255,255,0.8); margin: 8px 0 0 0; font-size: 16px;">${usdDisplay}</p>` : ""}
-      </div>
+  const textContent = `Hi ${email},
 
-      ${fromAddress ? `
-      <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-        <p style="color: #666; margin: 0 0 5px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">From</p>
-        <p style="color: #333; margin: 0; font-size: 14px; font-family: monospace; word-break: break-all;">${fromAddress}</p>
-      </div>
-      ` : ""}
+We are pleased to inform you that you just received a deposit.
 
-      <div style="text-align: center; margin-bottom: 20px;">
-        <a href="${explorerUrl}" style="display: inline-block; background: #333; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500;">
-          View Transaction
-        </a>
-      </div>
+Transaction Details:
+- Amount: ${amountDisplay}
+- Currency: ${assetName}
+- Transaction ID: ${signature}
 
-      <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">
-        This is an automated notification from your Knot wallet.
-      </p>
-    </div>
-  `;
+You can review your transaction history and account balance by logging into your account.
 
-  const textContent = `You Got Money! 💰
-
-Your Knot wallet just received a deposit.
-
-Amount: ${amount.toLocaleString()} ${assetName}${usdDisplay}
-${fromAddress ? `From: ${fromAddress}` : ""}
-
-View transaction: ${explorerUrl}
-
-This is an automated notification from your Knot wallet.`;
+Best regards,
+Knot`;
 
   try {
     logger.info("Attempting to send deposit notification email", {
@@ -169,7 +204,7 @@ This is an automated notification from your Knot wallet.`;
             email,
           },
         ],
-        subject: `💰 You received ${amount.toLocaleString()} ${assetName}`,
+        subject: "Deposit Notification",
         text: textContent,
         html: htmlContent,
       }),
