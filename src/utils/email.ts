@@ -99,7 +99,7 @@ export async function sendDepositNotification(
 
   // Format amount with USD value if available
   const amountDisplay = usdValue
-    ? `${amount.toLocaleString()} ${assetName} (~$${usdValue.toFixed(2)} USD)`
+    ? `~$${usdValue.toFixed(2)} USD`
     : `${amount.toLocaleString()} ${assetName}`;
 
   const htmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -132,7 +132,7 @@ export async function sendDepositNotification(
                   </tr>
                   <tr>
                     <td style="font-size:16px;font-family:var(--font-inter-tight);color:rgb(64,64,64);padding-bottom:16px;">
-                      We are pleased to inform you that you just received a deposit.
+                      We are pleased to inform you that you just received a deposit to your Agent wallet.
                     </td>
                   </tr>
                   <tr>
@@ -167,7 +167,7 @@ export async function sendDepositNotification(
 
   const textContent = `Hi ${email},
 
-We are pleased to inform you that you just received a deposit.
+We are pleased to inform you that you just received a deposit to your Agent wallet.
 
 Transaction Details:
 - Amount: ${amountDisplay}
