@@ -153,6 +153,32 @@ export async function signTransaction(
 }
 
 /**
+ * Sign a transaction for admin wallet using PARENT organization client.
+ * Returns base64-encoded signed transaction without broadcasting.
+ * Use this for admin operations with Jupiter Ultra.
+ */
+export async function signTransactionAdmin(
+  transaction: VersionedTransaction,
+  signerAddress: string
+): Promise<string> {
+  logger.debug("Signing admin transaction (no broadcast)", { signerAddress });
+
+  const turnkeySigner = new TurnkeySigner({
+    organizationId: config.TURNKEY_ORGANIZATION_ID,
+    client: turnkeyClient,
+  });
+
+  // Signing happens server-side in Turnkey's TEE
+  await turnkeySigner.addSignature(transaction, signerAddress);
+
+  // Return base64-encoded signed transaction
+  const signedTx = Buffer.from(transaction.serialize()).toString("base64");
+  logger.debug("Admin transaction signed", { signerAddress });
+
+  return signedTx;
+}
+
+/**
  * Sign a raw message (e.g. for Sign In With Solana, identity proofs).
  * Returns hex-encoded signature.
  *

@@ -22,6 +22,17 @@ export const config = cleanEnv(process.env, {
 
   // Jupiter
   JUPITER_API_KEY: str(),
+  // Jupiter Referral Program - for collecting swap fees
+  // Create referral account at: https://referral.jup.ag/
+  //
+  // TIERED FEE STRUCTURE (Jupiter takes 20%, so net = bps × 0.8):
+  //   < $6.25:    255 bps (2.55%) → nets 2.04%, breakeven at ~$4.90
+  //   $6.25-$12.50: 200 bps (2%)  → nets 1.60%, breakeven at ~$6.25
+  //   ≥ $12.50:    100 bps (1%)  → nets 0.80%, breakeven at ~$12.50
+  //
+  // Fee tiers are calculated dynamically based on estimated trade USD value.
+  // Covers $0.10 Turnkey signing cost at all tiers except trades < ~$5.
+  JUPITER_REFERRAL_ACCOUNT: str({ default: "" }),  // Referral account public key
 
   // Kalshi Prediction Markets
   KALSHI_API_KEY_ID: str({ default: "" }),

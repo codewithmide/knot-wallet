@@ -27,6 +27,7 @@
     "@coral-xyz/anchor": "^0.31.1",
     "@hono/node-server": "^1.19.9",
     "@hono/zod-validator": "^0.7.6",
+    "@jup-ag/referral-sdk": "^0.3.0",
     "@meteora-ag/dlmm": "^1.9.3",
     "@prisma/adapter-pg": "^7.4.1",
     "@prisma/client": "^7.4.1",

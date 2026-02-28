@@ -15,15 +15,18 @@ export async function createAuditLog(data: {
   metadata?: Prisma.InputJsonValue;
   normalizedUsdAmount?: number | null;
 }) {
-  const auditLog = await db.auditLog.create({ data });
+  // Extract normalizedUsdAmount for stats - it's not a Prisma column
+  const { normalizedUsdAmount, ...prismaData } = data;
+
+  const auditLog = await db.auditLog.create({ data: prismaData });
 
   await Promise.allSettled([
     db.agent.update({
-      where: { id: data.agentId },
+      where: { id: prismaData.agentId },
       data: { lastActiveAt: new Date() },
     }),
-    incrementStatsForAudit(data.action, data.status, data.amount, {
-      normalizedUsdAmount: data.normalizedUsdAmount,
+    incrementStatsForAudit(prismaData.action, prismaData.status, prismaData.amount, {
+      normalizedUsdAmount,
     }),
   ]).then((results) => {
     for (const result of results) {

@@ -5,12 +5,31 @@ import { createDecipheriv } from "crypto";
 import { db } from "../db/prisma.js";
 import { config } from "../config.js";
 import { error, success } from "../utils/response.js";
-import { connection } from "../turnkey/signer.js";
-import { PublicKey } from "@solana/web3.js";
-import { getAssociatedTokenAddress, getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { connection, signAndBroadcastAdmin, signTransactionAdmin } from "../turnkey/signer.js";
+import {
+  PublicKey,
+  SystemProgram,
+  VersionedTransaction,
+  TransactionMessage,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
+import {
+  getAssociatedTokenAddress,
+  getAccount,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getMint,
+  createAssociatedTokenAccountInstruction,
+  createTransferCheckedInstruction,
+} from "@solana/spl-token";
+import { ReferralProvider } from "@jup-ag/referral-sdk";
 import { startAdminOtpFlow, completeAdminOtpFlow, verifyAdminToken } from "../auth/turnkey-auth.js";
 import { logger } from "../utils/logger.js";
 import { AppError } from "../utils/errors.js";
+import { resolveTokenMint } from "../utils/tokens.js";
+import { createAuditLog } from "../utils/audit.js";
+import { kalshiRequest, type BalanceResponse } from "../kalshi/client.js";
 
 const admin = new Hono();
 
@@ -161,6 +180,8 @@ admin.use("/liquidity/*", verifyAdminMiddleware);
 admin.use("/agents/*", verifyAdminMiddleware);
 admin.use("/transactions/*", verifyAdminMiddleware);
 admin.use("/dashboard", verifyAdminMiddleware);
+admin.use("/wallet/*", verifyAdminMiddleware);
+admin.use("/referral/*", verifyAdminMiddleware);
 
 async function verifyAdminMiddleware(c: any, next: () => Promise<void>) {
   const token = c.req.header(ADMIN_TOKEN_HEADER);
@@ -1714,6 +1735,737 @@ admin.get("/dashboard", async (c) => {
   } catch (err) {
     logger.error("Failed to retrieve dashboard stats", { error: String(err) });
     return error(c, "Failed to retrieve dashboard stats.", 500, { error: String(err) });
+  }
+});
+
+// =============================================================================
+// ADMIN WALLET OPERATIONS (Fee-Free)
+// Transfer and swap from admin wallets without platform fees
+// =============================================================================
+
+// Jupiter Ultra API for admin swaps
+const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
+
+// Helper to get admin wallet config
+type AdminWalletType = "kalshi" | "meteora";
+
+function getAdminWallet(walletType: AdminWalletType): { address: string; keyId: string } | null {
+  if (walletType === "kalshi") {
+    if (!config.KNOT_KALSHI_ADMIN_WALLET_ADDRESS || !config.KNOT_KALSHI_ADMIN_KEY_ID) {
+      return null;
+    }
+    return {
+      address: config.KNOT_KALSHI_ADMIN_WALLET_ADDRESS,
+      keyId: config.KNOT_KALSHI_ADMIN_KEY_ID,
+    };
+  } else if (walletType === "meteora") {
+    if (!config.KNOT_METEORA_ADMIN_WALLET_ADDRESS || !config.KNOT_METEORA_ADMIN_KEY_ID) {
+      return null;
+    }
+    return {
+      address: config.KNOT_METEORA_ADMIN_WALLET_ADDRESS,
+      keyId: config.KNOT_METEORA_ADMIN_KEY_ID,
+    };
+  }
+  return null;
+}
+
+// POST /admin/wallet/transfer
+// Admin transfer SOL or SPL tokens without platform fees
+admin.post(
+  "/wallet/transfer",
+  zValidator(
+    "json",
+    z.object({
+      wallet: z.enum(["kalshi", "meteora"]),
+      to: z.string().min(32).max(44),
+      amount: z.number().positive(),
+      mint: z.string().optional(), // If not provided, transfers SOL
+    })
+  ),
+  async (c) => {
+    const { wallet: walletType, to, amount, mint } = c.req.valid("json");
+    const adminEmail = (c.get as (key: string) => string | undefined)("adminEmail") || "unknown";
+
+    logger.info("Admin transfer requested", { walletType, to, amount, mint, adminEmail });
+
+    try {
+      const adminWallet = getAdminWallet(walletType);
+      if (!adminWallet) {
+        return error(c, `Admin wallet '${walletType}' is not configured.`, 503);
+      }
+
+      const fromAddress = adminWallet.address;
+      const fromPubkey = new PublicKey(fromAddress);
+      const toPubkey = new PublicKey(to);
+
+      let signature: string;
+      let assetLabel: string;
+
+      if (!mint || mint.toUpperCase() === "SOL") {
+        // Transfer native SOL
+        const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
+
+        // Verify balance
+        const balance = await connection.getBalance(fromPubkey);
+        const estimatedFee = 10_000;
+        if (balance < lamports + estimatedFee) {
+          return error(
+            c,
+            `Insufficient SOL balance. Have ${balance / LAMPORTS_PER_SOL} SOL, need ${(lamports + estimatedFee) / LAMPORTS_PER_SOL} SOL.`,
+            400
+          );
+        }
+
+        const { blockhash } = await connection.getLatestBlockhash();
+        const message = new TransactionMessage({
+          payerKey: fromPubkey,
+          recentBlockhash: blockhash,
+          instructions: [
+            SystemProgram.transfer({ fromPubkey, toPubkey, lamports }),
+          ],
+        }).compileToV0Message();
+
+        const transaction = new VersionedTransaction(message);
+        signature = await signAndBroadcastAdmin(transaction, fromAddress);
+        assetLabel = "SOL";
+
+      } else {
+        // Transfer SPL token
+        const mintPubkey = new PublicKey(mint);
+
+        // Detect token program
+        let tokenProgramId = TOKEN_PROGRAM_ID;
+        let mintInfo;
+        try {
+          mintInfo = await getMint(connection, mintPubkey);
+        } catch (err) {
+          if (err instanceof Error && err.name === "TokenInvalidAccountOwnerError") {
+            mintInfo = await getMint(connection, mintPubkey, undefined, TOKEN_2022_PROGRAM_ID);
+            tokenProgramId = TOKEN_2022_PROGRAM_ID;
+          } else {
+            throw err;
+          }
+        }
+
+        const decimals = mintInfo.decimals;
+        const rawAmount = Math.floor(amount * Math.pow(10, decimals));
+
+        const fromTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, fromPubkey, false, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        const toTokenAccount = await getAssociatedTokenAddress(
+          mintPubkey, toPubkey, false, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+
+        // Verify balance
+        try {
+          const accountInfo = await getAccount(connection, fromTokenAccount, undefined, tokenProgramId);
+          if (Number(accountInfo.amount) < rawAmount) {
+            return error(
+              c,
+              `Insufficient token balance. Have ${Number(accountInfo.amount) / Math.pow(10, decimals)}, need ${amount}.`,
+              400
+            );
+          }
+        } catch (err) {
+          if ((err as Error).name === "TokenAccountNotFoundError") {
+            return error(c, `No token account found for mint ${mint}. Balance is 0.`, 400);
+          }
+          throw err;
+        }
+
+        const { blockhash } = await connection.getLatestBlockhash();
+        const instructions = [];
+
+        // Create recipient token account if needed
+        const toAccountInfo = await connection.getAccountInfo(toTokenAccount);
+        if (!toAccountInfo) {
+          instructions.push(
+            createAssociatedTokenAccountInstruction(
+              fromPubkey, toTokenAccount, toPubkey, mintPubkey, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+          );
+        }
+
+        instructions.push(
+          createTransferCheckedInstruction(
+            fromTokenAccount, mintPubkey, toTokenAccount, fromPubkey, rawAmount, decimals, [], tokenProgramId
+          )
+        );
+
+        const message = new TransactionMessage({
+          payerKey: fromPubkey,
+          recentBlockhash: blockhash,
+          instructions,
+        }).compileToV0Message();
+
+        const transaction = new VersionedTransaction(message);
+        signature = await signAndBroadcastAdmin(transaction, fromAddress);
+        assetLabel = mint;
+      }
+
+      // Log admin action
+      await createAuditLog({
+        agentId: "admin",
+        action: "admin_transfer",
+        asset: assetLabel,
+        amount,
+        from: fromAddress,
+        to,
+        signature,
+        status: "confirmed",
+        metadata: { walletType, adminEmail, noFee: true },
+      });
+
+      logger.info("Admin transfer completed", { signature, walletType, amount, to, adminEmail });
+
+      return success(c, "Admin transfer completed.", {
+        signature,
+        explorerUrl: `https://solscan.io/tx/${signature}`,
+        from: fromAddress,
+        to,
+        amount,
+        asset: assetLabel,
+        fee: 0,
+        note: "No platform fee (admin transfer)",
+      });
+    } catch (err) {
+      logger.error("Admin transfer failed", { error: String(err), walletType, to, amount });
+      return error(c, `Transfer failed: ${String(err)}`, 500);
+    }
+  }
+);
+
+// POST /admin/wallet/swap
+// Admin swap tokens via Jupiter without platform fees
+admin.post(
+  "/wallet/swap",
+  zValidator(
+    "json",
+    z.object({
+      wallet: z.enum(["kalshi", "meteora"]),
+      from: z.string(), // Token symbol or mint address
+      to: z.string(), // Token symbol or mint address
+      amount: z.number().positive(),
+      slippageBps: z.number().int().min(1).max(5000).default(50),
+    })
+  ),
+  async (c) => {
+    const { wallet: walletType, from, to, amount, slippageBps } = c.req.valid("json");
+    const adminEmail = (c.get as (key: string) => string | undefined)("adminEmail") || "unknown";
+
+    logger.info("Admin swap requested", { walletType, from, to, amount, slippageBps, adminEmail });
+
+    try {
+      const adminWallet = getAdminWallet(walletType);
+      if (!adminWallet) {
+        return error(c, `Admin wallet '${walletType}' is not configured.`, 503);
+      }
+
+      const agentAddress = adminWallet.address;
+
+      // Resolve token symbols to mints
+      const fromResolved = await resolveTokenMint(from);
+      const toResolved = await resolveTokenMint(to);
+      const inputMint = fromResolved.mint;
+      const outputMint = toResolved.mint;
+
+      // Get input token decimals
+      const inputDecimals = fromResolved.decimals ?? 9;
+      const amountLamports = Math.floor(amount * Math.pow(10, inputDecimals));
+
+      const jupiterHeaders = {
+        "Content-Type": "application/json",
+        "x-api-key": config.JUPITER_API_KEY,
+      };
+
+      // Get order from Jupiter Ultra API (full amount, no fee deduction)
+      const orderParams = new URLSearchParams({
+        inputMint,
+        outputMint,
+        amount: amountLamports.toString(),
+        taker: agentAddress,
+      });
+
+      const orderUrl = `${JUPITER_ULTRA_API}/order?${orderParams}`;
+      logger.info("Admin Jupiter Ultra order request", { url: orderUrl });
+
+      const orderResponse = await fetch(orderUrl, { headers: jupiterHeaders }).then((r) => r.json());
+
+      if (orderResponse.errorCode || orderResponse.errorMessage) {
+        const errorMsg = orderResponse.errorMessage || `Error code: ${orderResponse.errorCode}`;
+        return error(c, `Jupiter order error: ${errorMsg}`, 400);
+      }
+
+      if (!orderResponse.transaction) {
+        return error(
+          c,
+          `No swap route found for ${fromResolved.symbol} → ${toResolved.symbol}. Insufficient liquidity.`,
+          400
+        );
+      }
+
+      // Deserialize and sign
+      const transactionBuf = Buffer.from(orderResponse.transaction, "base64");
+      const transaction = VersionedTransaction.deserialize(transactionBuf);
+      const signedTransaction = await signTransactionAdmin(transaction, agentAddress);
+
+      // Execute via Jupiter Ultra
+      const executeResponse = await fetch(`${JUPITER_ULTRA_API}/execute`, {
+        method: "POST",
+        headers: jupiterHeaders,
+        body: JSON.stringify({
+          signedTransaction,
+          requestId: orderResponse.requestId,
+        }),
+      }).then((r) => r.json());
+
+      if (executeResponse.status === "Failed" || executeResponse.error) {
+        return error(c, `Swap execution failed: ${executeResponse.error || "Unknown error"}`, 500);
+      }
+
+      const signature = executeResponse.signature;
+      const outputDecimals = toResolved.decimals ?? 9;
+      const outputAmount = (
+        parseInt(executeResponse.outputAmountResult || orderResponse.outAmount) / Math.pow(10, outputDecimals)
+      ).toFixed(6);
+
+      // Log admin action
+      await createAuditLog({
+        agentId: "admin",
+        action: "admin_swap",
+        asset: fromResolved.symbol,
+        amount,
+        to: toResolved.symbol,
+        signature,
+        status: "confirmed",
+        metadata: {
+          walletType,
+          adminEmail,
+          inputMint,
+          outputMint,
+          outputAmount: parseFloat(outputAmount),
+          noFee: true,
+        },
+      });
+
+      logger.info("Admin swap completed", { signature, walletType, from, to, amount, adminEmail });
+
+      return success(c, "Admin swap completed.", {
+        signature,
+        explorerUrl: `https://solscan.io/tx/${signature}`,
+        wallet: agentAddress,
+        inputMint,
+        outputMint,
+        inputAmount: `${amount} ${fromResolved.symbol}`,
+        outputAmount: `${outputAmount} ${toResolved.symbol}`,
+        fee: 0,
+        note: "No platform fee (admin swap)",
+      });
+    } catch (err) {
+      logger.error("Admin swap failed", { error: String(err), walletType, from, to, amount });
+      return error(c, `Swap failed: ${String(err)}`, 500);
+    }
+  }
+);
+
+// GET /admin/wallet/balances
+// Get balances for all admin wallets
+admin.get("/wallet/balances", async (c) => {
+  try {
+    const wallets: {
+      name: string;
+      address: string | null;
+      configured: boolean;
+      balances?: { sol: number; usdc: number };
+    }[] = [];
+
+    // Kalshi admin wallet
+    const kalshiWallet = getAdminWallet("kalshi");
+    if (kalshiWallet) {
+      const pubkey = new PublicKey(kalshiWallet.address);
+      const solBalance = (await connection.getBalance(pubkey)) / 1e9;
+      let usdcBalance = 0;
+      try {
+        const usdcAccount = await getAssociatedTokenAddress(USDC_MINT, pubkey, false, TOKEN_PROGRAM_ID);
+        const accountInfo = await getAccount(connection, usdcAccount, undefined, TOKEN_PROGRAM_ID);
+        usdcBalance = Number(accountInfo.amount) / 1e6;
+      } catch {
+        // No USDC account
+      }
+      wallets.push({
+        name: "kalshi",
+        address: kalshiWallet.address,
+        configured: true,
+        balances: { sol: solBalance, usdc: usdcBalance },
+      });
+    } else {
+      wallets.push({ name: "kalshi", address: null, configured: false });
+    }
+
+    // Meteora admin wallet
+    const meteoraWallet = getAdminWallet("meteora");
+    if (meteoraWallet) {
+      const pubkey = new PublicKey(meteoraWallet.address);
+      const solBalance = (await connection.getBalance(pubkey)) / 1e9;
+      let usdcBalance = 0;
+      try {
+        const usdcAccount = await getAssociatedTokenAddress(USDC_MINT, pubkey, false, TOKEN_PROGRAM_ID);
+        const accountInfo = await getAccount(connection, usdcAccount, undefined, TOKEN_PROGRAM_ID);
+        usdcBalance = Number(accountInfo.amount) / 1e6;
+      } catch {
+        // No USDC account
+      }
+      wallets.push({
+        name: "meteora",
+        address: meteoraWallet.address,
+        configured: true,
+        balances: { sol: solBalance, usdc: usdcBalance },
+      });
+    } else {
+      wallets.push({ name: "meteora", address: null, configured: false });
+    }
+
+    // Fee collection wallet (read-only, no signing)
+    if (config.KNOT_FEE_WALLET_ADDRESS) {
+      const pubkey = new PublicKey(config.KNOT_FEE_WALLET_ADDRESS);
+      const solBalance = (await connection.getBalance(pubkey)) / 1e9;
+      let usdcBalance = 0;
+      try {
+        const usdcAccount = await getAssociatedTokenAddress(USDC_MINT, pubkey, false, TOKEN_PROGRAM_ID);
+        const accountInfo = await getAccount(connection, usdcAccount, undefined, TOKEN_PROGRAM_ID);
+        usdcBalance = Number(accountInfo.amount) / 1e6;
+      } catch {
+        // No USDC account
+      }
+      wallets.push({
+        name: "fee_collection",
+        address: config.KNOT_FEE_WALLET_ADDRESS,
+        configured: true,
+        balances: { sol: solBalance, usdc: usdcBalance },
+      });
+    } else {
+      wallets.push({ name: "fee_collection", address: null, configured: false });
+    }
+
+    // Kalshi portfolio balance (from Kalshi API, not on-chain)
+    let kalshiPortfolio: {
+      configured: boolean;
+      balanceCents?: number;
+      balanceDollars?: number;
+      portfolioValueCents?: number;
+      portfolioValueDollars?: number;
+      error?: string;
+    } = { configured: false };
+
+    if (config.KALSHI_API_KEY_ID && config.KALSHI_RSA_PRIVATE_KEY) {
+      try {
+        const kalshiBalance = await kalshiRequest<BalanceResponse>("GET", "/portfolio/balance");
+        kalshiPortfolio = {
+          configured: true,
+          balanceCents: kalshiBalance.balance,
+          balanceDollars: kalshiBalance.balance / 100,
+          portfolioValueCents: kalshiBalance.portfolio_value,
+          portfolioValueDollars: kalshiBalance.portfolio_value / 100,
+        };
+      } catch (err) {
+        logger.error("Failed to fetch Kalshi portfolio balance", { error: String(err) });
+        kalshiPortfolio = {
+          configured: true,
+          error: String(err),
+        };
+      }
+    }
+
+    return success(c, "Admin wallet balances retrieved.", { wallets, kalshiPortfolio });
+  } catch (err) {
+    logger.error("Failed to retrieve admin wallet balances", { error: String(err) });
+    return error(c, "Failed to retrieve wallet balances.", 500, { error: String(err) });
+  }
+});
+
+// =============================================================================
+// JUPITER REFERRAL FEE CLAIMING
+// Claim accumulated swap fees from Jupiter referral program
+// =============================================================================
+
+// SOL mint address (wrapped SOL)
+const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+
+// GET /admin/referral/status
+// Check Jupiter referral account status and unclaimed fees
+admin.get("/referral/status", async (c) => {
+  try {
+    const referralAccountAddress = config.JUPITER_REFERRAL_ACCOUNT;
+    const feeWalletAddress = config.KNOT_FEE_WALLET_ADDRESS;
+
+    if (!referralAccountAddress) {
+      return error(c, "Jupiter referral account not configured. Set JUPITER_REFERRAL_ACCOUNT in env.", 503);
+    }
+
+    logger.info("Checking Jupiter referral status", { referralAccountAddress });
+
+    // Initialize the ReferralProvider
+    const provider = new ReferralProvider(connection);
+
+    // Get all referral token accounts (where fees accumulate)
+    // The SDK takes a string address, not PublicKey
+    const { tokenAccounts, token2022Accounts } = await provider.getReferralTokenAccounts(referralAccountAddress);
+    const allTokenAccounts = [...tokenAccounts, ...token2022Accounts];
+
+    logger.info("Found referral token accounts", {
+      tokenAccounts: tokenAccounts.length,
+      token2022Accounts: token2022Accounts.length
+    });
+
+    // Collect unclaimed balances
+    const unclaimedFees: {
+      mint: string;
+      symbol: string;
+      amount: number;
+      amountRaw: string;
+      decimals: number;
+      isToken2022: boolean;
+    }[] = [];
+
+    // Known mints for display
+    const knownMints: Record<string, { symbol: string; decimals: number }> = {
+      "So11111111111111111111111111111111111111112": { symbol: "SOL", decimals: 9 },
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": { symbol: "USDC", decimals: 6 },
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": { symbol: "USDT", decimals: 6 },
+    };
+
+    for (let i = 0; i < allTokenAccounts.length; i++) {
+      const tokenAccount = allTokenAccounts[i];
+      const isToken2022 = i >= tokenAccounts.length;
+      const mintStr = tokenAccount.account.mint.toBase58();
+      const amountRaw = tokenAccount.account.amount;
+
+      // Skip if no balance
+      if (amountRaw === BigInt(0)) continue;
+
+      let symbol = "UNKNOWN";
+      let decimals = 9; // Default to SOL decimals
+
+      if (knownMints[mintStr]) {
+        symbol = knownMints[mintStr].symbol;
+        decimals = knownMints[mintStr].decimals;
+      } else {
+        // Try to fetch mint info
+        try {
+          const mintPubkey = tokenAccount.account.mint;
+          const mintInfo = await getMint(
+            connection,
+            mintPubkey,
+            undefined,
+            isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+          );
+          decimals = mintInfo.decimals;
+        } catch {
+          // Keep default
+        }
+      }
+
+      const amount = Number(amountRaw) / Math.pow(10, decimals);
+
+      unclaimedFees.push({
+        mint: mintStr,
+        symbol,
+        amount,
+        amountRaw: amountRaw.toString(),
+        decimals,
+        isToken2022,
+      });
+    }
+
+    return success(c, "Jupiter referral status retrieved.", {
+      referralAccount: {
+        address: referralAccountAddress,
+        feeTiers: {
+          description: "Tiered fees based on trade USD value",
+          tiers: [
+            { range: "< $6.25", bps: 255, net: "2.04%" },
+            { range: "$6.25-$12.50", bps: 200, net: "1.60%" },
+            { range: "≥ $12.50", bps: 100, net: "0.80%" },
+          ],
+        },
+      },
+      feeWallet: feeWalletAddress || "not configured",
+      tokenAccountsCount: allTokenAccounts.length,
+      unclaimedFees,
+      totalUnclaimedTokens: unclaimedFees.length,
+    });
+  } catch (err) {
+    logger.error("Failed to check referral status", { error: String(err) });
+    return error(c, `Failed to check referral status: ${String(err)}`, 500);
+  }
+});
+
+// POST /admin/referral/claim
+// Claim all accumulated Jupiter referral fees
+admin.post("/referral/claim", async (c) => {
+  const adminEmail = (c.get as (key: string) => string | undefined)("adminEmail") || "unknown";
+
+  try {
+    const referralAccountAddress = config.JUPITER_REFERRAL_ACCOUNT;
+    const feeWalletAddress = config.KNOT_FEE_WALLET_ADDRESS;
+
+    if (!referralAccountAddress) {
+      return error(c, "Jupiter referral account not configured. Set JUPITER_REFERRAL_ACCOUNT in env.", 503);
+    }
+
+    if (!feeWalletAddress) {
+      return error(c, "Fee wallet not configured. Set KNOT_FEE_WALLET_ADDRESS in env.", 503);
+    }
+
+    logger.info("Starting Jupiter referral fee claim", { referralAccountAddress, feeWalletAddress, adminEmail });
+
+    const referralAccountPubkey = new PublicKey(referralAccountAddress);
+    const feeWalletPubkey = new PublicKey(feeWalletAddress);
+
+    // Initialize the ReferralProvider
+    const provider = new ReferralProvider(connection);
+
+    // Get all referral token accounts
+    const { tokenAccounts, token2022Accounts } = await provider.getReferralTokenAccounts(referralAccountAddress);
+    const allTokenAccounts = [...tokenAccounts, ...token2022Accounts];
+
+    if (allTokenAccounts.length === 0) {
+      return success(c, "No referral token accounts found. Nothing to claim.", {
+        claimed: [],
+        totalClaimed: 0,
+      });
+    }
+
+    // Filter to only accounts with balance
+    const accountsWithBalance = allTokenAccounts.filter(
+      (ta) => ta.account.amount > BigInt(0)
+    );
+
+    if (accountsWithBalance.length === 0) {
+      return success(c, "All referral token accounts are empty. Nothing to claim.", {
+        claimed: [],
+        totalClaimed: 0,
+      });
+    }
+
+    logger.info("Found accounts with balance to claim", { count: accountsWithBalance.length });
+
+    const claimedFees: {
+      mint: string;
+      symbol: string;
+      amount: number;
+      signature: string;
+    }[] = [];
+
+    // Known mints for display
+    const knownMints: Record<string, { symbol: string; decimals: number }> = {
+      "So11111111111111111111111111111111111111112": { symbol: "SOL", decimals: 9 },
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": { symbol: "USDC", decimals: 6 },
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": { symbol: "USDT", decimals: 6 },
+    };
+
+    // Get claim transactions for each token
+    for (let i = 0; i < accountsWithBalance.length; i++) {
+      const tokenAccount = accountsWithBalance[i];
+      const isToken2022 = i >= tokenAccounts.filter((ta) => ta.account.amount > BigInt(0)).length;
+      const mintStr = tokenAccount.account.mint.toBase58();
+      const amountRaw = tokenAccount.account.amount;
+
+      let symbol = "UNKNOWN";
+      let decimals = 9;
+
+      if (knownMints[mintStr]) {
+        symbol = knownMints[mintStr].symbol;
+        decimals = knownMints[mintStr].decimals;
+      } else {
+        try {
+          const mintInfo = await getMint(
+            connection,
+            tokenAccount.account.mint,
+            undefined,
+            isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+          );
+          decimals = mintInfo.decimals;
+        } catch {
+          // Keep default
+        }
+      }
+
+      const amount = Number(amountRaw) / Math.pow(10, decimals);
+
+      try {
+        // Build claim transaction using the SDK
+        // Use claimV2 for Token-2022 tokens, claim for regular tokens
+        const claimTx = isToken2022
+          ? await provider.claimV2({
+              payerPubKey: feeWalletPubkey,
+              referralAccountPubKey: referralAccountPubkey,
+              mint: tokenAccount.account.mint,
+            })
+          : await provider.claim({
+              payerPubKey: feeWalletPubkey,
+              referralAccountPubKey: referralAccountPubkey,
+              mint: tokenAccount.account.mint,
+            });
+
+        logger.info("Claim transaction built", { mint: mintStr, symbol, amount, isToken2022 });
+
+        // The SDK returns a VersionedTransaction directly
+        // Try to broadcast (this will only work if we have proper signing setup)
+        const signature = await signAndBroadcastAdmin(claimTx, feeWalletAddress);
+
+        claimedFees.push({
+          mint: mintStr,
+          symbol,
+          amount,
+          signature,
+        });
+
+        logger.info("Successfully claimed referral fees", { mint: mintStr, symbol, amount, signature });
+
+        // Log to audit
+        await createAuditLog({
+          agentId: "admin",
+          action: "referral_claim",
+          asset: symbol,
+          amount,
+          to: feeWalletAddress,
+          signature,
+          status: "confirmed",
+          metadata: {
+            mint: mintStr,
+            referralAccount: referralAccountAddress,
+            adminEmail,
+            isToken2022,
+          },
+        });
+
+      } catch (claimErr) {
+        logger.error("Failed to claim for token", { mint: mintStr, symbol, error: String(claimErr) });
+        // Continue to try other tokens
+      }
+    }
+
+    if (claimedFees.length === 0) {
+      return error(
+        c,
+        "Failed to claim any referral fees. The fee wallet may not have authority over the referral account. " +
+        "Ensure KNOT_FEE_WALLET_ADDRESS is set as the referral account authority on Jupiter's dashboard.",
+        500
+      );
+    }
+
+    return success(c, `Successfully claimed ${claimedFees.length} referral fee token(s).`, {
+      claimed: claimedFees,
+      totalClaimed: claimedFees.length,
+      feeWallet: feeWalletAddress,
+    });
+
+  } catch (err) {
+    logger.error("Failed to claim referral fees", { error: String(err) });
+    return error(c, `Failed to claim referral fees: ${String(err)}`, 500);
   }
 });
 

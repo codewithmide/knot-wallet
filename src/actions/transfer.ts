@@ -38,15 +38,20 @@ export interface TransferResult {
   signature: string;
   explorerUrl: string;
   amount: string;
-  amountSent: number; // net amount after fee
-  fee: number; // total fee deducted
+  amountSent: number; // amount recipient receives
+  fee: number; // total fee charged
+  totalDeducted: number; // total amount deducted from sender (amountSent + fee)
+  feeMode: "added" | "deducted"; // "added" = fee on top, "deducted" = fee from amount
   mint: string | null; // null for native SOL
   recipient: string;
 }
 
 /**
  * Transfer native SOL to a recipient address.
- * Fee (1% + flat fee) is deducted from the transfer amount.
+ *
+ * Fee handling (1% + flat fee):
+ * - If user has enough balance: fee is added ON TOP, recipient gets exact amount
+ * - If user only has the transfer amount: fee is deducted, recipient gets amount - fee
  */
 export async function transferSOL(
   fromAddress: string,
@@ -60,15 +65,6 @@ export async function transferSOL(
   // Calculate fee (1% + flat fee)
   const percentageFee = amountSol * FEE_PERCENTAGE;
   const totalFee = percentageFee + FLAT_FEE_SOL;
-  const netAmount = amountSol - totalFee;
-
-  if (netAmount <= 0) {
-    throw new Error(
-      `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} SOL (to cover ${totalFee.toFixed(6)} SOL fee)`
-    );
-  }
-
-  logger.info("SOL transfer fees", { amountSol, percentageFee, flatFee: FLAT_FEE_SOL, totalFee, netAmount });
 
   // Policy check BEFORE building any transaction
   await checkPolicy(agentId, {
@@ -81,26 +77,65 @@ export async function transferSOL(
   const fromPubkey = new PublicKey(fromAddress);
   const toPubkey = new PublicKey(toAddress);
   const feeWalletPubkey = getFeeWalletAddress();
-  const netLamports = Math.floor(netAmount * LAMPORTS_PER_SOL);
-  const feeLamports = Math.floor(totalFee * LAMPORTS_PER_SOL);
 
-  // Verify balance (user needs full amount including fee)
+  // Check balance to determine fee mode
   const balance = await connection.getBalance(fromPubkey);
   const estimatedNetworkFee = 10_000; // lamports for network fee
-  const requiredBalance = Math.floor(amountSol * LAMPORTS_PER_SOL) + estimatedNetworkFee;
-  if (balance < requiredBalance) {
+
+  // Calculate required balances for both modes
+  const requiredForFeeAdded = Math.floor((amountSol + totalFee) * LAMPORTS_PER_SOL) + estimatedNetworkFee;
+  const requiredForFeeDeducted = Math.floor(amountSol * LAMPORTS_PER_SOL) + estimatedNetworkFee;
+
+  // Determine fee mode based on balance
+  let feeMode: "added" | "deducted";
+  let amountToRecipient: number;
+  let totalDeducted: number;
+
+  if (balance >= requiredForFeeAdded) {
+    // User has enough - fee added on top, recipient gets exact amount
+    feeMode = "added";
+    amountToRecipient = amountSol;
+    totalDeducted = amountSol + totalFee;
+    logger.info("SOL transfer: fee added on top (recipient gets exact amount)", {
+      amountSol,
+      fee: totalFee,
+      totalDeducted,
+      balance: balance / LAMPORTS_PER_SOL,
+    });
+  } else if (balance >= requiredForFeeDeducted) {
+    // User has only the amount - fee deducted from transfer
+    feeMode = "deducted";
+    amountToRecipient = amountSol - totalFee;
+    totalDeducted = amountSol;
+
+    if (amountToRecipient <= 0) {
+      throw new Error(
+        `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} SOL (to cover ${totalFee.toFixed(6)} SOL fee)`
+      );
+    }
+
+    logger.info("SOL transfer: fee deducted from amount", {
+      amountSol,
+      fee: totalFee,
+      amountToRecipient,
+      balance: balance / LAMPORTS_PER_SOL,
+    });
+  } else {
     throw new InsufficientFundsError(
-      `Insufficient balance. Have ${balance / LAMPORTS_PER_SOL} SOL, ` +
-        `need ${requiredBalance / LAMPORTS_PER_SOL} SOL (including network fees)`
+      `Insufficient balance. Have ${(balance / LAMPORTS_PER_SOL).toFixed(6)} SOL, ` +
+        `need at least ${(requiredForFeeDeducted / LAMPORTS_PER_SOL).toFixed(6)} SOL (including network fees)`
     );
   }
+
+  const recipientLamports = Math.floor(amountToRecipient * LAMPORTS_PER_SOL);
+  const feeLamports = Math.floor(totalFee * LAMPORTS_PER_SOL);
 
   const { blockhash } = await connection.getLatestBlockhash();
 
   // Build instructions: transfer to recipient + fee transfer to platform wallet
   const instructions = [
     // Main transfer to recipient
-    SystemProgram.transfer({ fromPubkey, toPubkey, lamports: netLamports }),
+    SystemProgram.transfer({ fromPubkey, toPubkey, lamports: recipientLamports }),
   ];
 
   // Add fee transfer if fee wallet is configured
@@ -134,7 +169,7 @@ export async function transferSOL(
       amount: amountSol,
       to: toAddress,
       status,
-      metadata: { error: String(error), fee: totalFee, netAmount },
+      metadata: { error: String(error), fee: totalFee, amountToRecipient, feeMode },
     });
     throw error;
   }
@@ -145,26 +180,38 @@ export async function transferSOL(
     agentId,
     action: "transfer",
     asset: "sol",
-    amount: netAmount,
+    amount: amountToRecipient,
     to: toAddress,
     signature,
     status,
     metadata: {
       requestedAmount: amountSol,
       fee: totalFee,
+      totalDeducted,
+      feeMode,
       feeCollected,
       feeWallet: feeCollected ? feeWalletPubkey.toBase58() : null,
     },
   });
 
-  logger.info("SOL transfer completed", { signature, amountSol, netAmount, fee: totalFee, feeCollected, toAddress });
+  logger.info("SOL transfer completed", {
+    signature,
+    requestedAmount: amountSol,
+    amountToRecipient,
+    fee: totalFee,
+    feeMode,
+    feeCollected,
+    toAddress,
+  });
 
   return {
     signature,
     explorerUrl: `https://solscan.io/tx/${signature}`,
     amount: `${amountSol} SOL`,
-    amountSent: netAmount,
+    amountSent: amountToRecipient,
     fee: totalFee,
+    totalDeducted,
+    feeMode,
     mint: null,
     recipient: toAddress,
   };
@@ -173,7 +220,10 @@ export async function transferSOL(
 /**
  * Transfer any SPL token to a recipient address.
  * Creates the recipient's token account if it doesn't exist.
- * Fee (1% + flat fee) is deducted from the transfer amount.
+ *
+ * Fee handling (1% + flat fee):
+ * - If user has enough balance: fee is added ON TOP, recipient gets exact amount
+ * - If user only has the transfer amount: fee is deducted, recipient gets amount - fee
  */
 export async function transferSPLToken(
   fromAddress: string,
@@ -193,15 +243,6 @@ export async function transferSPLToken(
   // Calculate fee (1% + flat fee)
   const percentageFee = amount * FEE_PERCENTAGE;
   const totalFee = percentageFee + FLAT_FEE_SPL;
-  const netAmount = amount - totalFee;
-
-  if (netAmount <= 0) {
-    throw new Error(
-      `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} tokens (to cover ${totalFee.toFixed(6)} fee)`
-    );
-  }
-
-  logger.info("SPL transfer fees", { amount, percentageFee, flatFee: FLAT_FEE_SPL, totalFee, netAmount });
 
   // Policy check
   await checkPolicy(agentId, {
@@ -236,8 +277,6 @@ export async function transferSPLToken(
   }
 
   const decimals = mintInfo.decimals;
-  const rawNetAmount = Math.floor(netAmount * Math.pow(10, decimals));
-  const rawFeeAmount = Math.floor(totalFee * Math.pow(10, decimals));
   const feeWalletPubkey = getFeeWalletAddress();
 
   // Get token accounts using the correct program
@@ -268,15 +307,11 @@ export async function transferSPLToken(
     );
   }
 
-  // Verify sender has sufficient balance (full amount including what becomes fee)
-  const rawFullAmount = Math.floor(amount * Math.pow(10, decimals));
+  // Check sender's balance to determine fee mode
+  let senderBalance: number;
   try {
     const fromAccountInfo = await getAccount(connection, fromTokenAccount, undefined, tokenProgramId);
-    if (Number(fromAccountInfo.amount) < rawFullAmount) {
-      throw new InsufficientFundsError(
-        `Insufficient token balance. Have ${Number(fromAccountInfo.amount) / Math.pow(10, decimals)}, need ${amount}`
-      );
-    }
+    senderBalance = Number(fromAccountInfo.amount) / Math.pow(10, decimals);
   } catch (error) {
     if ((error as Error).name === "TokenAccountNotFoundError") {
       throw new InsufficientFundsError(
@@ -285,6 +320,52 @@ export async function transferSPLToken(
     }
     throw error;
   }
+
+  // Determine fee mode based on balance
+  const requiredForFeeAdded = amount + totalFee;
+  const requiredForFeeDeducted = amount;
+
+  let feeMode: "added" | "deducted";
+  let amountToRecipient: number;
+  let totalDeducted: number;
+
+  if (senderBalance >= requiredForFeeAdded) {
+    // User has enough - fee added on top, recipient gets exact amount
+    feeMode = "added";
+    amountToRecipient = amount;
+    totalDeducted = amount + totalFee;
+    logger.info("SPL transfer: fee added on top (recipient gets exact amount)", {
+      amount,
+      fee: totalFee,
+      totalDeducted,
+      balance: senderBalance,
+    });
+  } else if (senderBalance >= requiredForFeeDeducted) {
+    // User has only the amount - fee deducted from transfer
+    feeMode = "deducted";
+    amountToRecipient = amount - totalFee;
+    totalDeducted = amount;
+
+    if (amountToRecipient <= 0) {
+      throw new Error(
+        `Amount too small. Minimum transfer: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} tokens (to cover ${totalFee.toFixed(6)} fee)`
+      );
+    }
+
+    logger.info("SPL transfer: fee deducted from amount", {
+      amount,
+      fee: totalFee,
+      amountToRecipient,
+      balance: senderBalance,
+    });
+  } else {
+    throw new InsufficientFundsError(
+      `Insufficient token balance. Have ${senderBalance.toFixed(6)}, need at least ${amount}`
+    );
+  }
+
+  const rawRecipientAmount = Math.floor(amountToRecipient * Math.pow(10, decimals));
+  const rawFeeAmount = Math.floor(totalFee * Math.pow(10, decimals));
 
   const { blockhash } = await connection.getLatestBlockhash();
   const instructions = [];
@@ -321,14 +402,14 @@ export async function transferSPLToken(
     }
   }
 
-  // Transfer net amount to recipient
+  // Transfer amount to recipient
   instructions.push(
     createTransferCheckedInstruction(
       fromTokenAccount,
       mintPubkey,
       toTokenAccount,
       fromPubkey,
-      rawNetAmount,
+      rawRecipientAmount,
       decimals,
       [],
       tokenProgramId
@@ -374,7 +455,7 @@ export async function transferSPLToken(
       amount,
       to: toAddress,
       status,
-      metadata: { error: String(error), mint: mintAddress, fee: totalFee, netAmount },
+      metadata: { error: String(error), mint: mintAddress, fee: totalFee, amountToRecipient, feeMode },
     });
     throw error;
   }
@@ -384,7 +465,7 @@ export async function transferSPLToken(
     agentId,
     action: "transfer",
     asset: mintAddress,
-    amount: netAmount,
+    amount: amountToRecipient,
     to: toAddress,
     signature,
     status,
@@ -393,6 +474,8 @@ export async function transferSPLToken(
       decimals,
       requestedAmount: amount,
       fee: totalFee,
+      totalDeducted,
+      feeMode,
       feeCollected,
       feeWallet: feeCollected ? feeWalletPubkey!.toBase58() : null,
     },
@@ -400,9 +483,10 @@ export async function transferSPLToken(
 
   logger.info("SPL token transfer completed", {
     signature,
-    amount,
-    netAmount,
+    requestedAmount: amount,
+    amountToRecipient,
     fee: totalFee,
+    feeMode,
     feeCollected,
     mintAddress,
     toAddress,
@@ -412,8 +496,10 @@ export async function transferSPLToken(
     signature,
     explorerUrl: `https://solscan.io/tx/${signature}`,
     amount: `${amount}`,
-    amountSent: netAmount,
+    amountSent: amountToRecipient,
     fee: totalFee,
+    totalDeducted,
+    feeMode,
     mint: mintAddress,
     recipient: toAddress,
   };

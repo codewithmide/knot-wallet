@@ -5,7 +5,6 @@ import { authMiddleware } from "../auth/middleware.js";
 import { transferSOL, transferSPLToken } from "../actions/transfer.js";
 import { trade } from "../actions/trade.js";
 import { getBalances } from "../utils/balances.js";
-import { exportWalletPrivateKey, exportWalletSeedPhrase } from "../actions/export.js";
 import {
   listPools,
   getPoolInfo,
@@ -157,54 +156,6 @@ actions.post(
     return success(c, "Trade executed successfully.", result);
   }
 );
-
-// POST /wallets/me/actions/export-private-key
-// Export the Solana private key for this wallet
-actions.post("/actions/export-private-key", async (c) => {
-  const agent = c.get("agent");
-
-  const result = await exportWalletPrivateKey(
-    agent.solanaAddress,
-    agent.turnkeySubOrgId
-  );
-
-  // Log the export action
-  await createAuditLog({
-    agentId: agent.id,
-    action: "export_private_key",
-    status: "confirmed",
-    metadata: { address: agent.solanaAddress },
-  });
-
-  return success(c, "Private key exported successfully. Keep it secure.", {
-    ...result,
-    warning: "Keep this private key secure. Never share it with anyone.",
-  });
-});
-
-// POST /wallets/me/actions/export-seed-phrase
-// Export the wallet seed phrase (mnemonic)
-actions.post("/actions/export-seed-phrase", async (c) => {
-  const agent = c.get("agent");
-
-  const result = await exportWalletSeedPhrase(
-    agent.turnkeyWalletId,
-    agent.turnkeySubOrgId
-  );
-
-  // Log the export action
-  await createAuditLog({
-    agentId: agent.id,
-    action: "export_seed_phrase",
-    status: "confirmed",
-    metadata: { walletId: agent.turnkeyWalletId },
-  });
-
-  return success(c, "Seed phrase exported successfully. Keep it secure.", {
-    ...result,
-    warning: "Keep this seed phrase secure. Never share it with anyone.",
-  });
-});
 
 // ============================================================================
 // Liquidity Provision (Meteora DLMM)

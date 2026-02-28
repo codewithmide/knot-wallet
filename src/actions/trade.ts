@@ -11,10 +11,89 @@ import { createAuditLog } from "../utils/audit.js";
 // Jupiter Ultra API (RPC-less, handles everything)
 const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
 
-// Fee configuration
-const FEE_PERCENTAGE = 0.01; // 1%
-const FLAT_FEE_TOKEN = 0.10; // $0.10 in token terms (for stablecoins)
-const FLAT_FEE_SOL = 0.001; // ~$0.10-$0.20 for SOL
+// Jupiter Referral Program for fee collection
+// Fees are collected automatically by Jupiter into referral token accounts
+// Tiered fee structure based on trade USD value (Jupiter takes 20%, so net = bps × 0.8):
+//   < $6.25:  255 bps (2.55%) - max fee, nets 2.04%, breakeven at ~$4.90
+//   $6.25-$12.50: 200 bps (2%) - nets 1.6%, profitable
+//   ≥ $12.50: 100 bps (1%) - nets 0.8%, profitable
+
+// Fee tier thresholds (in USD)
+const FEE_TIER_LOW_THRESHOLD = 6.25;    // Below this: max fee (255 bps)
+const FEE_TIER_MID_THRESHOLD = 12.50;   // Below this: medium fee (200 bps)
+
+// Fee amounts in basis points
+const FEE_BPS_HIGH = 255;   // 2.55% - for trades < $6.25
+const FEE_BPS_MEDIUM = 200; // 2.00% - for trades $6.25-$12.50
+const FEE_BPS_LOW = 100;    // 1.00% - for trades ≥ $12.50
+
+// Known stablecoin mints (1:1 with USD)
+const STABLECOIN_MINTS: Record<string, boolean> = {
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": true, // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": true, // USDT
+  "USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX": true,  // USDH
+  "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA": true,  // USDS
+};
+
+// Wrapped SOL mint
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+/**
+ * Estimate the USD value of a trade based on input token and amount.
+ * For stablecoins, amount = USD value directly.
+ * For SOL, we fetch the current price.
+ * For unknown tokens, return null (will use max fee).
+ */
+async function estimateTradeUsdValue(
+  inputMint: string,
+  amount: number
+): Promise<number | null> {
+  // Stablecoins: 1:1 with USD
+  if (STABLECOIN_MINTS[inputMint]) {
+    return amount;
+  }
+
+  // SOL: fetch price from Jupiter
+  if (inputMint === WSOL_MINT) {
+    try {
+      const priceResponse = await fetch(
+        `https://api.jup.ag/price/v2?ids=${WSOL_MINT}`
+      ).then((r) => r.json());
+
+      const solPrice = priceResponse?.data?.[WSOL_MINT]?.price;
+      if (solPrice && typeof solPrice === "number") {
+        return amount * solPrice;
+      }
+    } catch (error) {
+      logger.warn("Failed to fetch SOL price for fee calculation", { error: String(error) });
+    }
+    // Fallback: assume ~$150 SOL (conservative estimate, will use higher fee tier)
+    return amount * 150;
+  }
+
+  // Unknown token: return null to trigger max fee
+  return null;
+}
+
+/**
+ * Calculate the appropriate referral fee tier based on estimated USD value.
+ * Returns fee in basis points (50-255 range for Jupiter).
+ */
+function calculateFeeTier(estimatedUsdValue: number | null): number {
+  // Unknown value: use max fee to be safe
+  if (estimatedUsdValue === null) {
+    return FEE_BPS_HIGH;
+  }
+
+  // Tiered fee structure
+  if (estimatedUsdValue < FEE_TIER_LOW_THRESHOLD) {
+    return FEE_BPS_HIGH;  // 255 bps for < $6.25
+  } else if (estimatedUsdValue < FEE_TIER_MID_THRESHOLD) {
+    return FEE_BPS_MEDIUM; // 200 bps for $6.25-$12.50
+  } else {
+    return FEE_BPS_LOW;    // 100 bps for ≥ $12.50
+  }
+}
 
 export interface TradeResult {
   signature: string;
@@ -22,9 +101,9 @@ export interface TradeResult {
   inputMint: string;
   outputMint: string;
   inputAmount: string;
-  inputAmountSwapped: number; // net amount after fee
-  fee: number; // fee deducted from input
   outputAmount: string;
+  feeBps: number; // fee in basis points collected by Jupiter referral
+  feeMint: string | null; // token mint where fee was collected
   priceImpact: string;
 }
 
@@ -68,36 +147,48 @@ export async function trade(
 
   // Get token decimals for amount conversion
   const inputDecimals = fromResolved.decimals ?? await getTokenDecimals(inputMint);
+  const amountLamports = Math.floor(amount * Math.pow(10, inputDecimals));
 
-  // Calculate fee (1% + flat fee in input token terms)
-  const isInputSol = inputMint === "So11111111111111111111111111111111111111112";
-  const flatFee = isInputSol ? FLAT_FEE_SOL : FLAT_FEE_TOKEN;
-  const percentageFee = amount * FEE_PERCENTAGE;
-  const totalFee = percentageFee + flatFee;
-  const netAmount = amount - totalFee;
+  // Jupiter referral configuration with tiered fees
+  const referralAccount = config.JUPITER_REFERRAL_ACCOUNT;
+  const hasReferral = !!referralAccount;
 
-  if (netAmount <= 0) {
-    throw new TradeError(
-      `Amount too small. Minimum swap: ${(totalFee / (1 - FEE_PERCENTAGE)).toFixed(6)} ${fromResolved.symbol} (to cover ${totalFee.toFixed(6)} fee)`
-    );
+  // Calculate tiered fee based on estimated USD value
+  const estimatedUsdValue = await estimateTradeUsdValue(inputMint, amount);
+  const referralFeeBps = calculateFeeTier(estimatedUsdValue);
+
+  if (!hasReferral) {
+    logger.warn("Jupiter referral account not configured", {
+      referralAccount: referralAccount || "not set",
+    });
   }
 
-  logger.info("Trade fees", { amount, percentageFee, flatFee, totalFee, netAmount });
-
-  const amountLamports = Math.floor(netAmount * Math.pow(10, inputDecimals));
+  logger.info("Trade fee tier calculated", {
+    estimatedUsdValue: estimatedUsdValue?.toFixed(2) ?? "unknown",
+    feeBps: referralFeeBps,
+    feeTier: estimatedUsdValue === null ? "unknown_token" :
+      estimatedUsdValue < FEE_TIER_LOW_THRESHOLD ? "high" :
+      estimatedUsdValue < FEE_TIER_MID_THRESHOLD ? "medium" : "low",
+  });
 
   const jupiterHeaders = {
     "Content-Type": "application/json",
     "x-api-key": config.JUPITER_API_KEY,
   };
 
-  // Step 1: Get order from Jupiter Ultra API
+  // Step 1: Get order from Jupiter Ultra API with referral fee
   const orderParams = new URLSearchParams({
     inputMint,
     outputMint,
     amount: amountLamports.toString(),
     taker: agentAddress,
   });
+
+  // Add referral parameters if configured
+  if (hasReferral) {
+    orderParams.set("referralAccount", referralAccount);
+    orderParams.set("referralFee", referralFeeBps.toString());
+  }
 
   const orderUrl = `${JUPITER_ULTRA_API}/order?${orderParams}`;
   logger.info("Jupiter Ultra order request", {
@@ -107,6 +198,8 @@ export async function trade(
     amount,
     amountLamports,
     taker: agentAddress,
+    referralAccount: hasReferral ? referralAccount : "none",
+    referralFeeBps: hasReferral ? referralFeeBps : 0,
   });
 
   const orderResponse = await fetch(orderUrl, {
@@ -119,6 +212,8 @@ export async function trade(
     router: orderResponse.router,
     inAmount: orderResponse.inAmount,
     outAmount: orderResponse.outAmount,
+    feeBps: orderResponse.feeBps,
+    feeMint: orderResponse.feeMint,
     errorCode: orderResponse.errorCode,
     errorMessage: orderResponse.errorMessage,
   });
@@ -154,7 +249,10 @@ export async function trade(
   try {
     signedTransaction = await signTransaction(transaction, agentAddress, subOrgId);
   } catch (error) {
-    await logTradeError(agentId, fromResolved.symbol, toResolved.symbol, netAmount, inputMint, outputMint, error, { requestedAmount: amount, fee: totalFee });
+    await logTradeError(agentId, fromResolved.symbol, toResolved.symbol, amount, inputMint, outputMint, error, {
+      feeBps: orderResponse.feeBps,
+      feeMint: orderResponse.feeMint,
+    });
     throw error;
   }
 
@@ -181,11 +279,11 @@ export async function trade(
       agentId,
       fromResolved.symbol,
       toResolved.symbol,
-      netAmount,
+      amount,
       inputMint,
       outputMint,
       new Error(executeResponse.error || "Execution failed"),
-      { requestedAmount: amount, fee: totalFee }
+      { feeBps: orderResponse.feeBps, feeMint: orderResponse.feeMint }
     );
     throw new TradeError(`Trade execution failed: ${executeResponse.error || "Unknown error"}`);
   }
@@ -196,21 +294,26 @@ export async function trade(
     parseInt(executeResponse.outputAmountResult || orderResponse.outAmount) / Math.pow(10, outputDecimals)
   ).toFixed(6);
 
+  // Fee info from Jupiter response
+  const feeBps = orderResponse.feeBps || 0;
+  const feeMint = orderResponse.feeMint || null;
+
   // Log successful trade
   await createAuditLog({
     agentId,
     action: "trade",
     asset: fromResolved.symbol,
-    amount: netAmount,
+    amount,
     to: toResolved.symbol,
     signature,
     status: "confirmed",
     metadata: {
       inputMint,
       outputMint,
-      requestedAmount: amount,
-      fee: totalFee,
       outputAmount: parseFloat(outputAmount),
+      feeBps,
+      feeMint,
+      feeCollectedViaReferral: hasReferral && feeBps > 0,
       priceImpact: orderResponse.priceImpact || orderResponse.priceImpactPct,
       router: orderResponse.router,
       gasless: orderResponse.gasless,
@@ -218,7 +321,12 @@ export async function trade(
     },
   });
 
-  logger.info("Trade completed via Ultra API", { signature, router: orderResponse.router });
+  logger.info("Trade completed via Ultra API", {
+    signature,
+    router: orderResponse.router,
+    feeBps,
+    feeMint,
+  });
 
   return {
     signature,
@@ -226,9 +334,9 @@ export async function trade(
     inputMint,
     outputMint,
     inputAmount: `${amount} ${fromResolved.symbol}`,
-    inputAmountSwapped: netAmount,
-    fee: totalFee,
     outputAmount: `${outputAmount} ${toResolved.symbol}`,
+    feeBps,
+    feeMint,
     priceImpact: `${orderResponse.priceImpact || orderResponse.priceImpactPct || 0}%`,
   };
 }
@@ -242,7 +350,7 @@ async function logTradeError(
   inputMint: string,
   outputMint: string,
   error: unknown,
-  feeInfo?: { requestedAmount: number; fee: number }
+  feeInfo?: { feeBps?: number; feeMint?: string }
 ): Promise<void> {
   await createAuditLog({
     agentId,
@@ -255,7 +363,7 @@ async function logTradeError(
       inputMint,
       outputMint,
       error: String(error),
-      ...(feeInfo && { requestedAmount: feeInfo.requestedAmount, fee: feeInfo.fee }),
+      ...(feeInfo && { feeBps: feeInfo.feeBps, feeMint: feeInfo.feeMint }),
     },
   });
 }
