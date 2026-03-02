@@ -36,3 +36,4 @@ scripts/delete-agent.ts
 API_TESTING.md
 claude.md
 openapi.yaml
+.claude/
