@@ -10,7 +10,7 @@ import { tokens } from "./routes/tokens.js";
 import { webhooks } from "./routes/webhooks.js";
 import { stats } from "./routes/stats.js";
 import { predictions } from "./routes/predictions.js";
-import { admin } from "./routes/admin.js";
+import { admin } from "./routes/admin/index.js";
 import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { AppError } from "./utils/errors.js";

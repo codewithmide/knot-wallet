@@ -15,7 +15,7 @@ import {
   claimRewards,
   retryPendingWithdrawal,
   isMeteoraAdminConfigured,
-} from "../services/liquidity.js";
+} from "../services/liquidity/index.js";
 import { db } from "../db/prisma.js";
 import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
