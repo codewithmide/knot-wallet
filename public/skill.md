@@ -407,7 +407,9 @@ Authorization: Bearer YOUR_SESSION_TOKEN
 |-------|---------|-------------|
 | tokenX | — | Filter by base token (symbol or mint) |
 | tokenY | — | Filter by quote token (symbol or mint) |
-| limit | 50 | Max results |
+| limit | 50 | Max results (max 50) |
+
+> **Important:** Do not request more than 50 pools at a time (`limit` must be ≤ 50). Use `tokenX` and `tokenY` filters to narrow results instead of increasing the limit.
 
 **Example:** `GET /wallets/me/pools?tokenX=SOL&tokenY=USDC`
 
