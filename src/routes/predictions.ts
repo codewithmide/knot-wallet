@@ -32,7 +32,7 @@ import {
   getAgentPositions,
   getAgentOrders,
   isAdminWalletConfigured,
-} from "../services/predictions.js";
+} from "../services/predictions/index.js";
 
 import { agentActionRateLimit } from "../utils/rate-limit.js";
 import { idempotency } from "../utils/idempotency.js";
