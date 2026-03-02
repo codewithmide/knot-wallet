@@ -68,6 +68,7 @@ export const config = cleanEnv(process.env, {
   // Server
   PORT: port({ default: 3000 }),
   API_BASE_URL: str({ default: "http://localhost:3000" }),
+  LOG_LEVEL: str({ choices: ["trace", "debug", "info", "warn", "error", "fatal", "silent"], default: "info" }),
 });
 
 // Construct RPC URL if not provided
