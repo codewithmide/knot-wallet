@@ -44,23 +44,19 @@ if (cleanupTimer && typeof cleanupTimer === "object" && "unref" in cleanupTimer)
 }
 
 /**
- * Hono middleware that enforces request idempotency.
+ * Hono middleware that supports request idempotency.
  *
  * Usage: place after `authMiddleware` on mutation routes.
- * Requires the `Idempotency-Key` header on financial mutation endpoints.
- * Returns 400 if the header is missing.
+ * If an `Idempotency-Key` header is present, deduplicates and caches responses.
+ * If omitted, the request proceeds normally without idempotency protection.
  */
 export async function idempotency(c: Context, next: Next) {
   const idempotencyKey = c.req.header("idempotency-key");
 
-  // Require idempotency key on mutation endpoints
+  // No idempotency key — proceed without dedup protection
   if (!idempotencyKey) {
-    return error(
-      c,
-      "Idempotency-Key header is required for this endpoint. Send a unique value (UUID recommended) to prevent duplicate operations.",
-      400,
-      { code: "MISSING_IDEMPOTENCY_KEY" }
-    );
+    await next();
+    return;
   }
 
   // Validate key format (expect UUID-like or reasonable string)

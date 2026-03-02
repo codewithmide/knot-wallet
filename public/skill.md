@@ -1095,7 +1095,7 @@ When rate limited, you receive:
 
 ## 9. Idempotency
 
-All financial mutation endpoints **require** an `Idempotency-Key` header to prevent duplicate execution. Requests without this header will receive a `400` error.
+All financial mutation endpoints support an optional `Idempotency-Key` header to prevent duplicate execution. **You are strongly encouraged to include it on every mutation request** — it protects against double-spending when retrying after timeouts or network errors.
 
 **How to use:** Send an `Idempotency-Key` header with a unique value (UUID recommended) on every mutation request.
 
@@ -1112,7 +1112,7 @@ Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 | First request with key | Executes normally. Response cached for 24 hours. |
 | Same key again | Returns cached response instantly (header: `Idempotency-Status: cached`). |
 | Same key, concurrent request | Returns `409 Conflict` — wait and retry. |
-| No key provided | Returns `400 Bad Request` with code `MISSING_IDEMPOTENCY_KEY`. |
+| No key provided | Request executes normally without idempotency protection. |
 
 **Supported endpoints:**
 - `POST /wallets/me/actions/transfer`
@@ -1140,5 +1140,5 @@ Keys are scoped per agent — the same key used by different agents won't collid
 - **Your Solana address is public** — you can share it freely to receive tokens.
 - **Check balances** before submitting transfers or trades to avoid failed transactions.
 - **Check market liquidity** before buying prediction contracts — if `liquidity` is 0, there are no orders to fill.
-- **Always include `Idempotency-Key`** on transfers, trades, and LP/prediction operations — it is required and prevents double-execution on retries.
+- **Always include `Idempotency-Key`** on transfers, trades, and LP/prediction operations — it is optional but strongly recommended to prevent double-execution on retries.
 - **Respect rate limits** — check `Retry-After` header and wait the indicated time before retrying.
