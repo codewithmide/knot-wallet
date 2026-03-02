@@ -15,12 +15,14 @@ import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { AppError } from "./utils/errors.js";
 import { success, error } from "./utils/response.js";
+import { globalIpRateLimit } from "./utils/rate-limit.js";
 
 const app = new Hono();
 
 // Global middleware
 app.use("*", cors());
 app.use("*", honoLogger());
+app.use("*", globalIpRateLimit);
 
 // Serve skill.md — this is how agents discover capabilities
 app.get("/skill.md", (c) => {

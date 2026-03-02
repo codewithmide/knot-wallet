@@ -20,11 +20,13 @@ import { db } from "../db/prisma.js";
 import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
 import { createAuditLog } from "../utils/audit.js";
+import { agentActionRateLimit } from "../utils/rate-limit.js";
 
 const actions = new Hono();
 
-// All action routes require authentication
+// All action routes require authentication, then rate-limit per agent
 actions.use("*", authMiddleware);
+actions.use("*", agentActionRateLimit);
 
 // GET /wallets/me/balances
 actions.get("/balances", async (c) => {

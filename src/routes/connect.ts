@@ -8,6 +8,7 @@ import { DEFAULT_POLICY, AgentPolicy } from "../policy/types.js";
 import { config } from "../config.js";
 import { success, error } from "../utils/response.js";
 import { AppError } from "../utils/errors.js";
+import { otpStartRateLimit, otpCompleteRateLimit, resetOtpEscalation } from "../utils/rate-limit.js";
 import jwt from "jsonwebtoken";
 
 const connect = new Hono();
@@ -17,6 +18,7 @@ const connect = new Hono();
 connect.post(
   "/start",
   zValidator("json", z.object({ email: z.string().email() })),
+  otpStartRateLimit,
   async (c) => {
     const { email } = c.req.valid("json");
     const startedAt = Date.now();
@@ -75,6 +77,7 @@ connect.post(
       otpCode: z.string().length(6),
     })
   ),
+  otpCompleteRateLimit,
   async (c) => {
     const { email, otpId, otpCode } = c.req.valid("json");
 
@@ -82,6 +85,9 @@ connect.post(
 
     try {
       const result = await completeOtpFlow(email, otpId, otpCode);
+
+      // Reset escalating rate limit on successful authentication
+      resetOtpEscalation(email);
 
       logger.info("Agent authenticated", {
         email,

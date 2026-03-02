@@ -34,6 +34,8 @@ import {
   isAdminWalletConfigured,
 } from "../services/predictions.js";
 
+import { agentActionRateLimit } from "../utils/rate-limit.js";
+
 const predictions = new Hono();
 
 // Check if Kalshi is configured
@@ -46,6 +48,7 @@ predictions.use("*", async (c, next) => {
 
 // All prediction routes require authentication
 predictions.use("*", authMiddleware);
+predictions.use("*", agentActionRateLimit);
 
 // =============================================================================
 // Market Discovery (Read-only)

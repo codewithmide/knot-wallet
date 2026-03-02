@@ -5,10 +5,13 @@ import { authMiddleware } from "../auth/middleware.js";
 import { getAgentPolicy, updateAgentPolicy } from "../policy/engine.js";
 import { success } from "../utils/response.js";
 
+import { agentActionRateLimit } from "../utils/rate-limit.js";
+
 const policyRoutes = new Hono();
 
-// All policy routes require authentication
+// All policy routes require authentication, then rate-limit per agent
 policyRoutes.use("*", authMiddleware);
+policyRoutes.use("*", agentActionRateLimit);
 
 // GET /wallets/me/policy
 policyRoutes.get("/", async (c) => {

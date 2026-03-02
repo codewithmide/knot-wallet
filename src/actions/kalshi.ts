@@ -470,9 +470,16 @@ export async function placeOrder(
 ): Promise<PlaceOrderResult> {
   logger.info("Placing Kalshi order", { ticker, side, action, count, price, type });
 
+  // Compute USD value for policy check.
+  // Kalshi prices are in cents (1–99). For market orders without a price,
+  // assume worst-case cost of 99¢ per contract.
+  const pricePerContract = price ?? 99; // cents
+  const usdValue = (count * pricePerContract) / 100;
+
   // Policy check
   await checkPolicy(agentId, {
     type: "prediction_market",
+    usdValue,
     action: "place_order",
     ticker,
     side,
