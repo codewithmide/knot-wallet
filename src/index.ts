@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
@@ -13,6 +14,7 @@ import { predictions } from "./routes/predictions.js";
 import { admin } from "./routes/admin/index.js";
 import { config } from "./config.js";
 import { logger } from "./utils/logger.js";
+import { db } from "./db/prisma.js";
 import { AppError } from "./utils/errors.js";
 import { success, error } from "./utils/response.js";
 import { globalIpRateLimit } from "./utils/rate-limit.js";
@@ -99,7 +101,78 @@ app.onError((err, c) => {
 });
 
 // Start server
-serve({ fetch: app.fetch, port: config.PORT }, (info) => {
+const server: ServerType = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   logger.info(`Knot Agent Wallet API running on port ${info.port}`);
   logger.info(`Solana network: ${config.SOLANA_NETWORK}`);
 });
+
+// =============================================================================
+// Stale OTP Cleanup — runs every 30 minutes
+// =============================================================================
+
+const OTP_CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+async function cleanupStaleOtps(): Promise<void> {
+  try {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+    const { count } = await db.otpCode.deleteMany({
+      where: {
+        OR: [
+          { expiresAt: { lt: oneHourAgo } },        // expired > 1 hour ago
+          { used: true, createdAt: { lt: oneHourAgo } }, // used > 1 hour ago
+        ],
+      },
+    });
+
+    if (count > 0) {
+      logger.info("Cleaned up stale OTP codes", { deleted: count });
+    }
+  } catch (err) {
+    logger.error("OTP cleanup failed", { error: String(err) });
+  }
+}
+
+const otpCleanupTimer = setInterval(cleanupStaleOtps, OTP_CLEANUP_INTERVAL_MS);
+
+// Run once at startup after a short delay
+setTimeout(cleanupStaleOtps, 5_000);
+
+// =============================================================================
+// Graceful Shutdown
+// =============================================================================
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  logger.info(`Received ${signal}, shutting down gracefully…`);
+
+  // Stop accepting new connections
+  clearInterval(otpCleanupTimer);
+
+  server.close(() => {
+    logger.info("HTTP server closed");
+  });
+
+  // Give in-flight requests a few seconds to finish
+  const forceExitTimeout = setTimeout(() => {
+    logger.warn("Forcing exit after timeout");
+    process.exit(1);
+  }, 10_000);
+
+  try {
+    await db.$disconnect();
+    logger.info("Database disconnected");
+  } catch (err) {
+    logger.error("Error disconnecting database", { error: String(err) });
+  }
+
+  clearTimeout(forceExitTimeout);
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
