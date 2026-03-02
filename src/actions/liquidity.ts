@@ -103,35 +103,26 @@ export async function listPools(options?: {
   logger.info("Fetching DLMM pools from Meteora", { tokenX, tokenY, limit });
 
   try {
-    const response = await fetch(`${METEORA_API}/pair/all`);
+    // Use paginated endpoint to avoid OOM from fetching all 70k+ pools
+    const searchTerm = [tokenX, tokenY].filter(Boolean).join("-") || undefined;
+    const params = new URLSearchParams({
+      page: "0",
+      limit: String(limit),
+    });
+    if (searchTerm) params.set("search_term", searchTerm);
+
+    const response = await fetch(`${METEORA_API}/pair/all_by_groups?${params}`);
 
     if (!response.ok) {
       throw new Error(`Meteora API error: ${response.status}`);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let pools: any[] = await response.json();
+    const data: { groups: { name: string; pairs: any[] }[]; total: number } = await response.json();
 
-    // Filter by token if specified
-    if (tokenX) {
-      const resolvedX = await resolveTokenMint(tokenX);
-      pools = pools.filter(
-        (p) =>
-          p.mint_x === resolvedX.mint ||
-          p.mint_y === resolvedX.mint ||
-          p.name.toUpperCase().includes(tokenX.toUpperCase())
-      );
-    }
-
-    if (tokenY) {
-      const resolvedY = await resolveTokenMint(tokenY);
-      pools = pools.filter(
-        (p) =>
-          p.mint_x === resolvedY.mint ||
-          p.mint_y === resolvedY.mint ||
-          p.name.toUpperCase().includes(tokenY.toUpperCase())
-      );
-    }
+    // Flatten groups into a single pool list
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pools: any[] = data.groups.flatMap((g) => g.pairs);
 
     // Sort by liquidity (descending) and limit
     pools = pools
@@ -228,17 +219,19 @@ export async function getUserPositions(
       return userPositions.map((pos: any) => formatPosition(pos, poolAddress));
     }
 
-    // Get positions across all pools the user has interacted with
-    // First, fetch all pools
-    const poolsResponse = await fetch(`${METEORA_API}/pair/all`);
+    // Get positions across top pools the user may have interacted with
+    // Use paginated endpoint to avoid OOM from fetching all 70k+ pools
+    const poolsResponse = await fetch(`${METEORA_API}/pair/all_by_groups?page=0&limit=50`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const allPools: any[] = await poolsResponse.json();
+    const poolsData: { groups: { name: string; pairs: any[] }[]; total: number } = await poolsResponse.json();
 
     const positions: UserPosition[] = [];
 
-    // Check first 50 pools by liquidity for user positions
+    // Check top 50 pool groups by liquidity for user positions
     // This is a limitation - for a full solution, we'd need indexer support
-    const topPools = allPools
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const topPools: any[] = poolsData.groups
+      .flatMap((g) => g.pairs)
       .sort((a, b) => parseFloat(b.liquidity || "0") - parseFloat(a.liquidity || "0"))
       .slice(0, 50);
 

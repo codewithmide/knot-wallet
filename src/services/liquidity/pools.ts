@@ -18,28 +18,25 @@ export async function listPools(options?: {
 
   logger.info("Fetching DLMM pools from Meteora", { tokenX, tokenY, limit });
 
-  const response = await fetch(`${METEORA_API}/pair/all`);
+  // Use paginated endpoint to avoid OOM from fetching all 70k+ pools
+  const searchTerm = [tokenX, tokenY].filter(Boolean).join("-") || undefined;
+  const params = new URLSearchParams({
+    page: "0",
+    limit: String(limit),
+  });
+  if (searchTerm) params.set("search_term", searchTerm);
+
+  const response = await fetch(`${METEORA_API}/pair/all_by_groups?${params}`);
   if (!response.ok) {
     throw new LiquidityError(`Meteora API error: ${response.status}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let pools: any[] = await response.json();
+  const data: { groups: { name: string; pairs: any[] }[]; total: number } = await response.json();
 
-  // Filter by token if specified
-  if (tokenX) {
-    const upperX = tokenX.toUpperCase();
-    pools = pools.filter(
-      (p) => p.name.toUpperCase().includes(upperX)
-    );
-  }
-
-  if (tokenY) {
-    const upperY = tokenY.toUpperCase();
-    pools = pools.filter(
-      (p) => p.name.toUpperCase().includes(upperY)
-    );
-  }
+  // Flatten groups into a single pool list
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let pools: any[] = data.groups.flatMap((g) => g.pairs);
 
   // Sort by liquidity and limit
   pools = pools
