@@ -48,6 +48,8 @@ On errors, `status` is `false` and `data` may contain additional error context.
 5. [Prediction Markets (Kalshi)](#5-prediction-markets-kalshi)
 6. [Policy & Spend Limits](#6-policy--spend-limits)
 7. [Token Info Lookup](#7-token-info-lookup)
+8. [Rate Limits](#8-rate-limits)
+9. [Idempotency](#9-idempotency)
 
 ---
 
@@ -1054,6 +1056,82 @@ GET /tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 
 ---
 
+## 8. Rate Limits
+
+Knot enforces rate limits to protect the service. All responses include rate limit headers:
+
+| Header | Description |
+|---|---|
+| `X-RateLimit-Limit` | Maximum requests allowed in the window |
+| `X-RateLimit-Remaining` | Requests remaining in the current window |
+| `Retry-After` | Seconds to wait before retrying (only on 429) |
+
+**Limits by endpoint:**
+
+| Scope | Limit |
+|---|---|
+| Global (per IP) | 100 requests / minute |
+| `POST /connect/start` (per email) | 3 requests / 10 minutes (escalates on repeated abuse: 1h → 6h → 24h) |
+| `POST /connect/complete` (per OTP) | 5 attempts / 10 minutes |
+| Authenticated endpoints (per agent) | 30 requests / minute |
+
+When rate limited, you receive:
+
+```json
+{
+  "status": false,
+  "statusCode": 429,
+  "message": "Too many requests. Please try again later.",
+  "data": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "retryAfterSeconds": 42
+  }
+}
+```
+
+**OTP escalation:** If you exhaust the OTP start limit multiple times without completing authentication, the cooldown escalates: 10 min → 1 hour → 6 hours → 24 hours. Successfully completing authentication resets the cooldown.
+
+---
+
+## 9. Idempotency
+
+All financial mutation endpoints **require** an `Idempotency-Key` header to prevent duplicate execution. Requests without this header will receive a `400` error.
+
+**How to use:** Send an `Idempotency-Key` header with a unique value (UUID recommended) on every mutation request.
+
+```
+POST /wallets/me/actions/transfer
+Authorization: Bearer YOUR_SESSION_TOKEN
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+```
+
+**Behavior:**
+
+| Scenario | Result |
+|---|---|
+| First request with key | Executes normally. Response cached for 24 hours. |
+| Same key again | Returns cached response instantly (header: `Idempotency-Status: cached`). |
+| Same key, concurrent request | Returns `409 Conflict` — wait and retry. |
+| No key provided | Returns `400 Bad Request` with code `MISSING_IDEMPOTENCY_KEY`. |
+
+**Supported endpoints:**
+- `POST /wallets/me/actions/transfer`
+- `POST /wallets/me/actions/unwrap-sol`
+- `POST /wallets/me/actions/trade`
+- `POST /wallets/me/actions/add-liquidity`
+- `POST /wallets/me/actions/remove-liquidity`
+- `POST /wallets/me/actions/claim-rewards`
+- `POST /wallets/me/actions/retry-withdrawal`
+- `POST /predictions/buy`
+- `POST /predictions/sell`
+- `POST /predictions/withdraw`
+
+Keys are scoped per agent — the same key used by different agents won't collide.
+
+**Best practice:** Generate a new UUID for each distinct operation. If your request times out or you get a network error, retry with the **same key** to safely avoid double-spending.
+
+---
+
 ## Rules
 
 - **Never share your sessionToken** in logs, forum posts, repos, or with other agents. Treat it like a password.
@@ -1062,3 +1140,5 @@ GET /tokens/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 - **Your Solana address is public** — you can share it freely to receive tokens.
 - **Check balances** before submitting transfers or trades to avoid failed transactions.
 - **Check market liquidity** before buying prediction contracts — if `liquidity` is 0, there are no orders to fill.
+- **Always include `Idempotency-Key`** on transfers, trades, and LP/prediction operations — it is required and prevents double-execution on retries.
+- **Respect rate limits** — check `Retry-After` header and wait the indicated time before retrying.

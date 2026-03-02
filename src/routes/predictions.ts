@@ -35,6 +35,7 @@ import {
 } from "../services/predictions.js";
 
 import { agentActionRateLimit } from "../utils/rate-limit.js";
+import { idempotency } from "../utils/idempotency.js";
 
 const predictions = new Hono();
 
@@ -49,6 +50,11 @@ predictions.use("*", async (c, next) => {
 // All prediction routes require authentication
 predictions.use("*", authMiddleware);
 predictions.use("*", agentActionRateLimit);
+
+// Idempotency protection on mutation routes (withdraw, buy, sell)
+predictions.use("/withdraw", idempotency);
+predictions.use("/buy", idempotency);
+predictions.use("/sell", idempotency);
 
 // =============================================================================
 // Market Discovery (Read-only)

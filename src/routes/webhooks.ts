@@ -89,9 +89,21 @@ webhooks.post("/helius", async (c) => {
     for (const tx of transactions) {
       const signature = tx.signature;
 
-      // Skip if we've already processed this signature recently
+      // Skip if we've already processed this signature recently (in-memory fast path)
       if (isSignatureProcessed(signature)) {
         logger.info("Skipping duplicate webhook for signature", { signature });
+        continue;
+      }
+
+      // Database-level dedup: check if this signature was already logged as a deposit.
+      // This catches duplicates across multiple server replicas/pods.
+      const existingDeposit = await db.auditLog.findFirst({
+        where: { signature, action: "deposit" },
+        select: { id: true },
+      });
+      if (existingDeposit) {
+        logger.info("Skipping duplicate webhook for signature (DB check)", { signature });
+        markSignatureProcessed(signature);
         continue;
       }
 

@@ -21,12 +21,17 @@ import { success, error } from "../utils/response.js";
 import { resolveTokenMint, TokenNotFoundError } from "../utils/tokens.js";
 import { createAuditLog } from "../utils/audit.js";
 import { agentActionRateLimit } from "../utils/rate-limit.js";
+import { idempotency } from "../utils/idempotency.js";
 
 const actions = new Hono();
 
 // All action routes require authentication, then rate-limit per agent
 actions.use("*", authMiddleware);
 actions.use("*", agentActionRateLimit);
+
+// Idempotency protection on all POST (mutation) routes
+// Clients can send an `Idempotency-Key` header to prevent duplicate executions
+actions.use("/actions/*", idempotency);
 
 // GET /wallets/me/balances
 actions.get("/balances", async (c) => {
