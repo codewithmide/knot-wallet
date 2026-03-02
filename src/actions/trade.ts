@@ -57,10 +57,11 @@ async function estimateTradeUsdValue(
   if (inputMint === WSOL_MINT) {
     try {
       const priceResponse = await fetch(
-        `https://api.jup.ag/price/v2?ids=${WSOL_MINT}`
+        `https://api.jup.ag/price/v3?ids=${WSOL_MINT}`,
+        { headers: { "x-api-key": config.JUPITER_API_KEY } }
       ).then((r) => r.json());
 
-      const solPrice = priceResponse?.data?.[WSOL_MINT]?.price;
+      const solPrice = priceResponse?.data?.[WSOL_MINT]?.usdPrice;
       if (solPrice && typeof solPrice === "number") {
         return amount * solPrice;
       }
@@ -138,23 +139,29 @@ export async function trade(
     amount,
   });
 
+  // Get token decimals for amount conversion
+  const inputDecimals = fromResolved.decimals ?? await getTokenDecimals(inputMint);
+  const amountLamports = Math.floor(amount * Math.pow(10, inputDecimals));
+
+  // Calculate tiered fee based on estimated USD value
+  const estimatedUsdValue = await estimateTradeUsdValue(inputMint, amount);
+
+  if (!estimatedUsdValue) {
+    throw new TradeError("Unable to determine USD value for trade. Price data unavailable.");
+  }
+
+  // Policy check BEFORE making any Jupiter API calls
   await checkPolicy(agentId, {
     type: "trade",
+    usdValue: estimatedUsdValue,
     fromMint: inputMint,
     toMint: outputMint,
     amount,
   });
 
-  // Get token decimals for amount conversion
-  const inputDecimals = fromResolved.decimals ?? await getTokenDecimals(inputMint);
-  const amountLamports = Math.floor(amount * Math.pow(10, inputDecimals));
-
   // Jupiter referral configuration with tiered fees
   const referralAccount = config.JUPITER_REFERRAL_ACCOUNT;
   const hasReferral = !!referralAccount;
-
-  // Calculate tiered fee based on estimated USD value
-  const estimatedUsdValue = await estimateTradeUsdValue(inputMint, amount);
   const referralFeeBps = calculateFeeTier(estimatedUsdValue);
 
   if (!hasReferral) {
@@ -307,6 +314,7 @@ export async function trade(
     to: toResolved.symbol,
     signature,
     status: "confirmed",
+    normalizedUsdAmount: estimatedUsdValue,
     metadata: {
       inputMint,
       outputMint,
@@ -318,6 +326,7 @@ export async function trade(
       router: orderResponse.router,
       gasless: orderResponse.gasless,
       route: orderResponse.routePlan?.map((r: { swapInfo: { label: string } }) => r.swapInfo?.label),
+      usdValue: estimatedUsdValue ?? 0, // For daily limit calculation
     },
   });
 

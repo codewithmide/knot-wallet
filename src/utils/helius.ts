@@ -59,8 +59,7 @@ export interface HeliusWebhookPayload {
 }
 
 /**
- * Register a webhook with Helius for a wallet address
- * https://www.helius.dev/docs/api-reference/webhooks#webhooks-api
+ * Registers a webhook with Helius for a wallet address
  */
 export async function registerHeliusWebhook(walletAddress: string): Promise<string> {
   const webhookUrl = `${config.API_BASE_URL}/webhooks/helius`;

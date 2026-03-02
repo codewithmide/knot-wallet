@@ -5,19 +5,19 @@ import { logger } from "../utils/logger.js";
 
 export interface PolicyRequest {
   type: "transfer" | "trade" | "add_liquidity" | "remove_liquidity" | "prediction_market";
-  asset?: "sol" | "usdc" | "spl"; // "spl" for other SPL tokens
+  usdValue: number;                // USD value of the operation (REQUIRED for all operations)
+  to?: string;                     // Recipient address (for transfers only)
+  // Original fields kept for logging/audit
+  asset?: "sol" | "usdc" | "spl";
   amount?: number;
-  to?: string;
-  mint?: string; // mint address for SPL tokens
+  mint?: string;
   fromMint?: string;
   toMint?: string;
-  // Liquidity-specific fields
   pool?: string;
   position?: string;
   amountX?: number;
   amountY?: number;
   percentage?: number;
-  // Prediction market fields
   action?: string;
   ticker?: string;
   side?: "yes" | "no";
@@ -29,6 +29,7 @@ export interface PolicyRequest {
 /**
  * Check if a request is allowed by the agent's policy.
  * Throws PolicyError if the request violates any policy rules.
+ * IMPORTANT: This MUST be called BEFORE any transaction is signed or API request is made.
  */
 export async function checkPolicy(
   agentId: string,
@@ -39,93 +40,90 @@ export async function checkPolicy(
     ? (agentPolicy.rules as unknown as AgentPolicy)
     : DEFAULT_POLICY;
 
-  logger.debug("Checking policy", { agentId, request, policy });
+  logger.info("Checking policy", { agentId, requestType: request.type, usdValue: request.usdValue });
 
-  // Trading check
+  // 1. Feature enable/disable checks (fail fast)
   if (request.type === "trade" && !policy.allowTrading) {
     throw new PolicyError("Trading is not enabled for this agent.");
   }
 
-  // Liquidity provision checks
-  if ((request.type === "add_liquidity" || request.type === "remove_liquidity")) {
-    if (!policy.allowLiquidity) {
-      throw new PolicyError("Liquidity provision is not enabled for this agent.");
-    }
-
-    // Pool whitelist check
-    if (policy.allowedPools && policy.allowedPools.length > 0 && request.pool) {
-      if (!policy.allowedPools.includes(request.pool)) {
-        throw new PolicyError(
-          `Pool ${request.pool} is not in your allowed pools list.`
-        );
-      }
-    }
+  if ((request.type === "add_liquidity" || request.type === "remove_liquidity") && !policy.allowLiquidityProvision) {
+    throw new PolicyError("Liquidity provision is not enabled for this agent.");
   }
 
-  // Prediction market checks
-  if (request.type === "prediction_market") {
-    if (!policy.allowPredictionMarkets) {
-      throw new PolicyError("Prediction market trading is not enabled for this agent.");
-    }
+  if (request.type === "prediction_market" && !policy.allowPredictionMarkets) {
+    throw new PolicyError("Prediction market trading is not enabled for this agent.");
+  }
 
-    // Order size limit
-    if (request.count !== undefined && request.count > policy.maxPredictionOrderSize) {
+  // 2. Recipient whitelist check (transfers only)
+  if (request.type === "transfer" && policy.allowedRecipients.length > 0 && request.to) {
+    if (!policy.allowedRecipients.includes(request.to)) {
       throw new PolicyError(
-        `Order size of ${request.count} contracts exceeds limit of ${policy.maxPredictionOrderSize}.`
+        `Recipient ${request.to} is not in your allowed recipients list.`
       );
     }
   }
 
-  // Transfer checks
-  if (request.type === "transfer" && request.amount !== undefined) {
-    const { asset, amount, to } = request;
+  // 3. Per-transaction USD limit (skip for remove_liquidity — users can always withdraw)
+  if (request.type !== "remove_liquidity" && request.usdValue > policy.maxSingleTransactionInUsd) {
+    throw new PolicyError(
+      `Transaction value of $${request.usdValue.toFixed(2)} exceeds single transaction limit of $${policy.maxSingleTransactionInUsd}.`
+    );
+  }
 
-    // Recipient whitelist (if configured)
-    if (policy.allowedRecipients.length > 0 && to) {
-      if (!policy.allowedRecipients.includes(to)) {
-        throw new PolicyError(
-          `Recipient ${to} is not in your allowed recipients list.`
-        );
-      }
-    }
+  // 4. Daily USD limit (skip for remove_liquidity — withdrawals are inbound, not outbound)
+  if (request.type !== "remove_liquidity") {
+    const dailySpentUsd = await getDailySpentUsd(agentId);
 
-    // Per-transaction limits
-    if (asset === "sol" && amount > policy.maxSingleTransferSol) {
+    if (dailySpentUsd + request.usdValue > policy.dailyLimitInUsd) {
       throw new PolicyError(
-        `Transfer of ${amount} SOL exceeds single transfer limit ` +
-        `of ${policy.maxSingleTransferSol} SOL.`
-      );
-    }
-
-    // Daily rolling limit (read from audit log)
-    const dailySpent = await getDailySpent(agentId, asset!);
-
-    if (asset === "sol" && dailySpent + amount > policy.dailyLimitSol) {
-      throw new PolicyError(
-        `Transfer would exceed daily SOL limit of ${policy.dailyLimitSol}. ` +
-        `Already spent: ${dailySpent} SOL today.`
+        `Transaction would exceed daily USD limit of $${policy.dailyLimitInUsd}. ` +
+        `Already spent: $${dailySpentUsd.toFixed(2)} today. ` +
+        `Attempting to spend: $${request.usdValue.toFixed(2)}.`
       );
     }
   }
 
-  logger.debug("Policy check passed", { agentId, request });
+  logger.info("Policy check passed", { agentId, requestType: request.type, usdValue: request.usdValue });
 }
 
 /**
- * Get the total amount spent by an agent in the last 24 hours for a given asset.
+ * Get the total USD value spent by an agent in the last 24 hours across ALL operations.
+ * Includes: transfers, trades, LP deposits, prediction market deposits.
  */
-async function getDailySpent(agentId: string, asset: string): Promise<number> {
+async function getDailySpentUsd(agentId: string): Promise<number> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const result = await db.auditLog.aggregate({
+
+  // Get all confirmed outbound operations in the last 24 hours
+  const logs = await db.auditLog.findMany({
     where: {
       agentId,
-      asset,
       status: "confirmed",
       createdAt: { gte: since },
+      action: {
+        in: [
+          "transfer_sol",
+          "transfer_spl",
+          "trade",
+          "add_liquidity",
+          "prediction_buy",
+          "prediction_withdrawal",
+        ],
+      },
     },
-    _sum: { amount: true },
+    select: {
+      metadata: true,
+    },
   });
-  return result._sum.amount ?? 0;
+
+  // Sum up usdValue from metadata
+  const totalUsd = logs.reduce((sum, log) => {
+    const metadata = log.metadata as any;
+    const usdValue = metadata?.usdValue ?? 0;
+    return sum + usdValue;
+  }, 0);
+
+  return totalUsd;
 }
 
 /**

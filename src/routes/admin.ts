@@ -1457,12 +1457,12 @@ admin.get("/transactions", async (c) => {
       }),
     ]);
 
-    // Get agent info for the transactions
-    const agentIds = [...new Set(transactions.map((t) => t.agentId))];
-    const agents = await db.agent.findMany({
+    // Get agent info for the transactions (filter out null agentIds for admin actions)
+    const agentIds = [...new Set(transactions.map((t) => t.agentId).filter((id): id is string => id !== null))];
+    const agents = agentIds.length > 0 ? await db.agent.findMany({
       where: { id: { in: agentIds } },
       select: { id: true, email: true, solanaAddress: true },
-    });
+    }) : [];
     const agentMap = new Map(agents.map((a) => [a.id, a]));
 
     // Organize action stats
@@ -1486,7 +1486,7 @@ admin.get("/transactions", async (c) => {
       offset,
       stats: statsSummary,
       transactions: transactions.map((tx) => {
-        const agent = agentMap.get(tx.agentId);
+        const agent = tx.agentId ? agentMap.get(tx.agentId) : null;
         return {
           id: tx.id,
           agentId: tx.agentId,
@@ -1678,11 +1678,14 @@ admin.get("/dashboard", async (c) => {
       take: 10,
     });
 
-    const topAgentIds = topAgentsByActivity.map((a) => a.agentId);
-    const topAgents = await db.agent.findMany({
+    // Filter out null agentIds (admin actions) from top agents
+    const topAgentIds = topAgentsByActivity
+      .map((a) => a.agentId)
+      .filter((id): id is string => id !== null);
+    const topAgents = topAgentIds.length > 0 ? await db.agent.findMany({
       where: { id: { in: topAgentIds } },
       select: { id: true, email: true },
-    });
+    }) : [];
     const topAgentMap = new Map(topAgents.map((a) => [a.id, a]));
 
     return success(c, "Dashboard stats retrieved.", {
@@ -1726,11 +1729,13 @@ admin.get("/dashboard", async (c) => {
         totalPositions: liquidityPositionCount,
         activePositions: activePositions,
       },
-      topAgents: topAgentsByActivity.map((a) => ({
-        agentId: a.agentId,
-        email: topAgentMap.get(a.agentId)?.email,
-        transactionCount: a._count,
-      })),
+      topAgents: topAgentsByActivity
+        .filter((a) => a.agentId !== null)
+        .map((a) => ({
+          agentId: a.agentId,
+          email: topAgentMap.get(a.agentId!)?.email,
+          transactionCount: a._count,
+        })),
     });
   } catch (err) {
     logger.error("Failed to retrieve dashboard stats", { error: String(err) });
@@ -1905,9 +1910,20 @@ admin.post(
         assetLabel = mint;
       }
 
-      // Log admin action
+      logger.info("Admin transfer completed", {
+        signature,
+        walletType,
+        asset: assetLabel,
+        amount,
+        from: fromAddress,
+        to,
+        adminEmail,
+        noFee: true,
+      });
+
+      // Log admin action to audit log (agentId is null for admin actions)
       await createAuditLog({
-        agentId: "admin",
+        agentId: null,
         action: "admin_transfer",
         asset: assetLabel,
         amount,
@@ -1915,10 +1931,12 @@ admin.post(
         to,
         signature,
         status: "confirmed",
-        metadata: { walletType, adminEmail, noFee: true },
+        metadata: {
+          walletType,
+          adminEmail,
+          noFee: true,
+        },
       });
-
-      logger.info("Admin transfer completed", { signature, walletType, amount, to, adminEmail });
 
       return success(c, "Admin transfer completed.", {
         signature,
@@ -2031,13 +2049,25 @@ admin.post(
         parseInt(executeResponse.outputAmountResult || orderResponse.outAmount) / Math.pow(10, outputDecimals)
       ).toFixed(6);
 
-      // Log admin action
+      logger.info("Admin swap completed", {
+        signature,
+        walletType,
+        inputMint,
+        outputMint,
+        inputAmount: amount,
+        outputAmount: parseFloat(outputAmount),
+        from: fromResolved.symbol,
+        to: toResolved.symbol,
+        adminEmail,
+        noFee: true,
+      });
+
+      // Log admin action to audit log (agentId is null for admin actions)
       await createAuditLog({
-        agentId: "admin",
+        agentId: null,
         action: "admin_swap",
         asset: fromResolved.symbol,
         amount,
-        to: toResolved.symbol,
         signature,
         status: "confirmed",
         metadata: {
@@ -2045,12 +2075,12 @@ admin.post(
           adminEmail,
           inputMint,
           outputMint,
+          inputSymbol: fromResolved.symbol,
+          outputSymbol: toResolved.symbol,
           outputAmount: parseFloat(outputAmount),
           noFee: true,
         },
       });
-
-      logger.info("Admin swap completed", { signature, walletType, from, to, amount, adminEmail });
 
       return success(c, "Admin swap completed.", {
         signature,
@@ -2423,12 +2453,21 @@ admin.post("/referral/claim", async (c) => {
           signature,
         });
 
-        logger.info("Successfully claimed referral fees", { mint: mintStr, symbol, amount, signature });
+        logger.info("Successfully claimed referral fees", {
+          mint: mintStr,
+          symbol,
+          amount,
+          signature,
+          referralAccount: referralAccountAddress,
+          feeWallet: feeWalletAddress,
+          adminEmail,
+          isToken2022,
+        });
 
-        // Log to audit
+        // Log admin action to audit log (agentId is null for admin actions)
         await createAuditLog({
-          agentId: "admin",
-          action: "referral_claim",
+          agentId: null,
+          action: "admin_referral_claim",
           asset: symbol,
           amount,
           to: feeWalletAddress,

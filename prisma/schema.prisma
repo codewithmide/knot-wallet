@@ -34,16 +34,16 @@ model AgentPolicy {
 
 model AuditLog {
   id        String   @id @default(uuid())
-  agentId   String
-  agent     Agent    @relation(fields: [agentId], references: [id])
-  action    String   // "transfer", "trade", "sign_message", "deposit", etc.
+  agentId   String?  // Optional: null for admin actions
+  agent     Agent?   @relation(fields: [agentId], references: [id])
+  action    String   // "transfer", "trade", "sign_message", "deposit", "admin_transfer", etc.
   asset     String?  // "sol", "usdc", etc.
   amount    Float?
   from      String?  // Source address (for deposits/transfers)
   to        String?  // Destination address
   signature String?
   status    String   // "confirmed", "failed", "rejected_by_policy"
-  metadata  Json?    // extra context (e.g. Jupiter quote details)
+  metadata  Json?    // extra context (e.g. Jupiter quote details, adminEmail)
   createdAt DateTime @default(now())
 
   @@index([agentId, createdAt])
@@ -67,10 +67,15 @@ model OtpCode {
 model StatsCache {
   id                   String   @id
   totalAgents          Int      @default(0)
+  // Trades (Jupiter swaps)
   totalTrades          Int      @default(0)
   totalTradeVolume     Float    @default(0)
+  totalTradeVolumeUsd  Float    @default(0)
+  // Transfers (withdrawals)
   totalTransfers       Int      @default(0)
   totalTransferVolume  Float    @default(0)
+  totalTransferVolumeUsd Float  @default(0)
+  // Deposits (inbound)
   totalDeposits        Int      @default(0)
   totalDepositVolume   Float    @default(0)
   totalDepositVolumeUsd Float   @default(0)
@@ -78,9 +83,11 @@ model StatsCache {
   totalLiquidityAdds     Int    @default(0)
   totalLiquidityRemoves  Int    @default(0)
   totalRewardsClaimed    Int    @default(0)
+  totalLiquidityVolumeUsd Float @default(0)
   // Prediction Markets (Kalshi)
   totalPredictionOrders  Int    @default(0)
   totalPredictionVolume  Int    @default(0)  // Total contracts traded
+  totalPredictionVolumeUsd Float @default(0)
   updatedAt            DateTime @updatedAt
 }
 

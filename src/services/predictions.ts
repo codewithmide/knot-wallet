@@ -1,6 +1,7 @@
 import { db } from "../db/prisma.js";
 import { logger } from "../utils/logger.js";
 import { createAuditLog } from "../utils/audit.js";
+import { checkPolicy } from "../policy/engine.js";
 import {
   kalshiRequest,
   CreateOrderRequest,
@@ -314,7 +315,7 @@ export async function completePredictionDeposit(
     return { deposit, newBalance: updatedBalance.balance };
   });
 
-  // Audit log
+  // Audit log - USDC amount is already in USD
   await createAuditLog({
     agentId,
     action: "prediction_deposit",
@@ -324,6 +325,7 @@ export async function completePredictionDeposit(
     to: adminWalletAddress,
     signature,
     status: "confirmed",
+    normalizedUsdAmount: usdcAmount,
     metadata: {
       depositId: result.deposit.id,
       pendingDepositId: depositId,
@@ -498,7 +500,7 @@ export async function depositToPredictions(
     return deposit;
   });
 
-  // Audit log
+  // Audit log - USDC amount is already in USD
   await createAuditLog({
     agentId,
     action: "prediction_deposit",
@@ -506,6 +508,7 @@ export async function depositToPredictions(
     amount: usdcAmount,
     signature: solanaSignature,
     status: "confirmed",
+    normalizedUsdAmount: usdcAmount,
     metadata: { depositId: result.id, usdCents },
   });
 
@@ -554,6 +557,14 @@ export async function withdrawFromPredictions(
 
   // Convert to USDC (1:1)
   const usdcAmount = usdCents / 100;
+
+  // Policy check BEFORE any database transaction
+  // Withdrawals count against daily USD limit
+  await checkPolicy(agentId, {
+    type: "prediction_market",
+    usdValue: usdcAmount,
+    action: "withdraw",
+  });
 
   // Create withdrawal record and debit balance in a transaction FIRST
   // This ensures the balance is debited even if the transfer fails
@@ -659,7 +670,11 @@ export async function withdrawFromPredictions(
     to: agentWalletAddress,
     signature,
     status: "confirmed",
-    metadata: { withdrawalId: withdrawal.id, usdCents },
+    metadata: {
+      withdrawalId: withdrawal.id,
+      usdCents,
+      usdValue: usdcAmount, // For daily limit calculation
+    },
   });
 
   logger.info("Prediction withdrawal completed", {
@@ -822,6 +837,17 @@ export async function buyPrediction(
   const totalCost = baseCost + feeCents;
   const totalCostUSDC = totalCost / 100; // Convert cents to USDC
 
+  // Policy check BEFORE any transaction
+  await checkPolicy(agentId, {
+    type: "prediction_market",
+    usdValue: totalCostUSDC,
+    ticker,
+    side,
+    orderAction: "buy",
+    count,
+    price: pricePerContract,
+  });
+
   // Get or create prediction balance (for tracking)
   const predictionBalance = await getOrCreatePredictionBalance(agentId);
 
@@ -973,13 +999,15 @@ export async function buyPrediction(
     return { order };
   });
 
-  // Audit log
+  // Audit log - totalCost is in cents, convert to USD for stats
+  const totalCostUsd = totalCost / 100;
   await createAuditLog({
     agentId,
     action: "prediction_buy",
     asset: ticker,
     amount: count,
     status: "confirmed",
+    normalizedUsdAmount: totalCostUsd,
     metadata: {
       orderId: result.order.id,
       kalshiOrderId,
@@ -988,6 +1016,7 @@ export async function buyPrediction(
       pricePerContract,
       totalCost,
       feeCents,
+      usdValue: totalCostUsd, // For daily limit calculation
     },
   });
 
@@ -1067,6 +1096,17 @@ export async function sellPrediction(
   const feeCents = percentageFee + FLAT_FEE_CENTS;
   const netProceeds = grossProceeds - feeCents;
   const netProceedsUSDC = netProceeds / 100; // Convert cents to USDC
+
+  // Policy check (sell is inbound, doesn't count against USD limits)
+  await checkPolicy(agentId, {
+    type: "prediction_market",
+    usdValue: 0, // Not an outbound operation
+    ticker,
+    side,
+    orderAction: "sell",
+    count,
+    price: pricePerContract,
+  });
 
   // Step 1: Place sell order on Kalshi
   // Kalshi requires yes_price even for market orders
@@ -1197,13 +1237,15 @@ export async function sellPrediction(
     return { order };
   });
 
-  // Audit log
+  // Audit log - grossProceeds is in cents, convert to USD for stats
+  const grossProceedsUsd = grossProceeds / 100;
   await createAuditLog({
     agentId,
     action: "prediction_sell",
     asset: ticker,
     amount: count,
     status: "confirmed",
+    normalizedUsdAmount: grossProceedsUsd,
     metadata: {
       orderId: result.order.id,
       kalshiOrderId,
@@ -1304,7 +1346,7 @@ export async function getAgentPositions(
 }
 
 /**
- * Get agent's order history.
+ * Get agent's order history with market and event titles.
  */
 export async function getAgentOrders(
   agentId: string,
@@ -1321,21 +1363,70 @@ export async function getAgentOrders(
     take: limit,
   });
 
-  return orders.map((o) => ({
-    orderId: o.id,
-    ticker: o.ticker,
-    eventTicker: o.eventTicker,
-    side: o.side,
-    action: o.action,
-    count: o.count,
-    pricePerContract: o.pricePerContract,
-    totalCost: o.totalCost,
-    feeCents: o.feeCents,
-    kalshiOrderId: o.kalshiOrderId,
-    status: o.status,
-    createdAt: o.createdAt.toISOString(),
-    filledAt: o.filledAt?.toISOString(),
-  }));
+  // Fetch market and event info for all orders
+  const marketCache: Record<string, { title: string; eventTicker: string }> = {};
+  const eventCache: Record<string, string> = {}; // eventTicker -> title
+
+  const ordersWithTitles = await Promise.all(
+    orders.map(async (o) => {
+      let marketTitle = "Unknown Market";
+      let eventTitle = "Unknown Event";
+
+      try {
+        // Fetch market info (cached by ticker)
+        if (!marketCache[o.ticker]) {
+          const market = await kalshiRequest<{ market: KalshiMarket }>(
+            "GET",
+            `/markets/${o.ticker}`
+          );
+          marketCache[o.ticker] = {
+            title: market.market.title,
+            eventTicker: market.market.event_ticker,
+          };
+        }
+
+        marketTitle = marketCache[o.ticker].title;
+        const eventTicker = marketCache[o.ticker].eventTicker;
+
+        // Fetch event info (cached by event_ticker)
+        if (!eventCache[eventTicker]) {
+          const event = await kalshiRequest<{ event: { title: string } }>(
+            "GET",
+            `/events/${eventTicker}`
+          );
+          eventCache[eventTicker] = event.event.title;
+        }
+
+        eventTitle = eventCache[eventTicker];
+      } catch (error) {
+        logger.warn("Failed to fetch market/event info for order", {
+          ticker: o.ticker,
+          error: String(error),
+        });
+        // Continue with default titles if fetch fails
+      }
+
+      return {
+        orderId: o.id,
+        ticker: o.ticker,
+        eventTicker: o.eventTicker,
+        marketTitle,
+        eventTitle,
+        side: o.side,
+        action: o.action,
+        count: o.count,
+        pricePerContract: o.pricePerContract,
+        totalCost: o.totalCost,
+        feeCents: o.feeCents,
+        kalshiOrderId: o.kalshiOrderId,
+        status: o.status,
+        createdAt: o.createdAt.toISOString(),
+        filledAt: o.filledAt?.toISOString(),
+      };
+    })
+  );
+
+  return ordersWithTitles;
 }
 
 // =============================================================================

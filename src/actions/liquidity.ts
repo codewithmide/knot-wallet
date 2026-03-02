@@ -10,6 +10,7 @@ import { checkPolicy } from "../policy/engine.js";
 import { logger } from "../utils/logger.js";
 import { createAuditLog } from "../utils/audit.js";
 import { resolveTokenMint } from "../utils/tokens.js";
+import { getTokenPriceUsd, computeUsdValue } from "../utils/pricing.js";
 
 // Meteora DLMM API for pool discovery
 const METEORA_API = "https://dlmm-api.meteora.ag";
@@ -315,14 +316,6 @@ export async function addLiquidity(
     rangeWidth,
   });
 
-  // Policy check
-  await checkPolicy(agentId, {
-    type: "add_liquidity",
-    pool: poolAddress,
-    amountX,
-    amountY,
-  });
-
   try {
     const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
     const activeBin = await dlmmPool.getActiveBin();
@@ -331,11 +324,36 @@ export async function addLiquidity(
     const minBinId = activeBin.binId - rangeWidth;
     const maxBinId = activeBin.binId + rangeWidth;
 
-    // Get token decimals
+    // Get token info
     const tokenXInfo = await dlmmPool.tokenX;
     const tokenYInfo = await dlmmPool.tokenY;
     const decimalsX = tokenXInfo.decimal;
     const decimalsY = tokenYInfo.decimal;
+    const mintX = tokenXInfo.publicKey.toString();
+    const mintY = tokenYInfo.publicKey.toString();
+
+    // Calculate USD value for policy check
+    const [priceX, priceY] = await Promise.all([
+      getTokenPriceUsd(mintX),
+      getTokenPriceUsd(mintY),
+    ]);
+
+    const usdValueX = computeUsdValue(amountX, priceX) ?? 0;
+    const usdValueY = computeUsdValue(amountY ?? 0, priceY) ?? 0;
+    const totalUsdValue = usdValueX + usdValueY;
+
+    if (totalUsdValue === 0) {
+      throw new Error("Unable to determine USD value for liquidity operation. Price data unavailable.");
+    }
+
+    // Policy check BEFORE building transaction
+    await checkPolicy(agentId, {
+      type: "add_liquidity",
+      usdValue: totalUsdValue,
+      pool: poolAddress,
+      amountX,
+      amountY,
+    });
 
     // Convert to lamports
     const totalXAmount = new BN(Math.floor(amountX * Math.pow(10, decimalsX)));
@@ -398,6 +416,7 @@ export async function addLiquidity(
         amountY: totalYAmount.toNumber() / Math.pow(10, decimalsY),
         minBinId,
         maxBinId,
+        usdValue: totalUsdValue, // For daily limit calculation
       },
     });
 
@@ -454,9 +473,10 @@ export async function removeLiquidity(
     throw new Error("Percentage must be between 1 and 100");
   }
 
-  // Policy check
+  // Policy check (remove liquidity doesn't count against USD limits since it's inbound)
   await checkPolicy(agentId, {
     type: "remove_liquidity",
+    usdValue: 0, // Not an outbound operation
     pool: poolAddress,
     position: positionAddress,
     percentage,

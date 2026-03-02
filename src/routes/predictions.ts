@@ -14,7 +14,13 @@ import {
   getMarket,
   listEvents,
   getEvent,
+  listSeries,
+  getSeries,
   getOrderbook,
+  listMilestones,
+  getMilestone,
+  listStructuredTargets,
+  getStructuredTarget,
 } from "../actions/kalshi.js";
 
 // Custodial prediction service
@@ -142,24 +148,10 @@ predictions.get("/events", async (c) => {
   try {
     const status = c.req.query("status") as "open" | "closed" | "settled" | undefined;
     const seriesTicker = c.req.query("series_ticker");
-    const category = c.req.query("category");
     const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!) : 20;
     const cursor = c.req.query("cursor");
-    const activeMarketsOnly = c.req.query("active_markets_only") === "true";
 
-    const result = await listEvents({ status, seriesTicker, category, limit, cursor });
-
-    // Filter events to only include those with at least one tradeable market
-    if (activeMarketsOnly) {
-      result.events = result.events.filter((event) => {
-        const markets = (event.markets as Record<string, unknown>[]) || [];
-        return markets.some((market) => {
-          const isOpen = market.status === "open" || market.status === "active";
-          const hasLiquidity = (market.liquidity as number) > 0;
-          return isOpen && hasLiquidity;
-        });
-      });
-    }
+    const result = await listEvents({ status, seriesTicker, limit, cursor });
 
     return success(c, "Events retrieved successfully.", result);
   } catch (err) {
@@ -178,6 +170,132 @@ predictions.get("/events/:eventTicker", async (c) => {
   } catch (err) {
     logger.error("Failed to get event", { error: err });
     return error(c, `Failed to get event: ${err}`, 500);
+  }
+});
+
+// GET /predictions/series
+// List all series
+predictions.get("/series", async (c) => {
+  try {
+    const category = c.req.query("category");
+    const tags = c.req.query("tags");
+    const includeProductMetadata = c.req.query("include_product_metadata") === "true";
+    const includeVolume = c.req.query("include_volume") === "true";
+    const minUpdatedTs = c.req.query("min_updated_ts") ? parseInt(c.req.query("min_updated_ts")!) : undefined;
+    const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!) : 100;
+    const cursor = c.req.query("cursor");
+
+    const result = await listSeries({
+      category,
+      tags,
+      includeProductMetadata: c.req.query("include_product_metadata") ? includeProductMetadata : undefined,
+      includeVolume: c.req.query("include_volume") ? includeVolume : undefined,
+      minUpdatedTs,
+      limit,
+      cursor,
+    });
+
+    return success(c, "Series retrieved successfully.", result);
+  } catch (err) {
+    logger.error("Failed to list series", { error: err });
+    return error(c, `Failed to list series: ${err}`, 500);
+  }
+});
+
+// GET /predictions/series/:seriesTicker
+// Get a specific series
+predictions.get("/series/:seriesTicker", async (c) => {
+  try {
+    const seriesTicker = c.req.param("seriesTicker");
+    const series = await getSeries(seriesTicker);
+    return success(c, "Series retrieved successfully.", series);
+  } catch (err) {
+    logger.error("Failed to get series", { error: err });
+    return error(c, `Failed to get series: ${err}`, 500);
+  }
+});
+
+// GET /predictions/milestones
+// List milestones (upcoming games, matches, events)
+// category = top-level (e.g., "Sports", "Crypto"), competition = specific (e.g., "Champions League")
+predictions.get("/milestones", async (c) => {
+  try {
+    const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!) : 100;
+    // Default to start of current day (UTC) so only upcoming milestones are returned
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const minimumStartDate = c.req.query("minimum_start_date") ?? todayStart.toISOString();
+    const category = c.req.query("category");
+    const competition = c.req.query("competition");
+    const type = c.req.query("type");
+    const relatedEventTicker = c.req.query("related_event_ticker");
+    const cursor = c.req.query("cursor");
+    const minUpdatedTs = c.req.query("min_updated_ts") ? parseInt(c.req.query("min_updated_ts")!) : undefined;
+
+    const result = await listMilestones({
+      limit,
+      minimumStartDate,
+      category,
+      competition,
+      type,
+      relatedEventTicker,
+      cursor,
+      minUpdatedTs,
+    });
+
+    return success(c, "Milestones retrieved successfully.", result);
+  } catch (err) {
+    logger.error("Failed to list milestones", { error: err });
+    return error(c, `Failed to list milestones: ${err}`, 500);
+  }
+});
+
+// GET /predictions/milestones/:milestoneId
+// Get a specific milestone by ID
+predictions.get("/milestones/:milestoneId", async (c) => {
+  try {
+    const milestoneId = c.req.param("milestoneId");
+    const milestone = await getMilestone(milestoneId);
+    return success(c, "Milestone retrieved successfully.", milestone);
+  } catch (err) {
+    logger.error("Failed to get milestone", { error: err });
+    return error(c, `Failed to get milestone: ${err}`, 500);
+  }
+});
+
+// GET /predictions/structured-targets
+// List structured targets with optional competition/type filtering
+predictions.get("/structured-targets", async (c) => {
+  try {
+    const type = c.req.query("type");
+    const competition = c.req.query("competition");
+    const pageSize = c.req.query("page_size") ? parseInt(c.req.query("page_size")!) : 100;
+    const cursor = c.req.query("cursor");
+
+    const result = await listStructuredTargets({
+      type,
+      competition,
+      pageSize,
+      cursor,
+    });
+
+    return success(c, "Structured targets retrieved successfully.", result);
+  } catch (err) {
+    logger.error("Failed to list structured targets", { error: err });
+    return error(c, `Failed to list structured targets: ${err}`, 500);
+  }
+});
+
+// GET /predictions/structured-targets/:structuredTargetId
+// Get a specific structured target by ID
+predictions.get("/structured-targets/:structuredTargetId", async (c) => {
+  try {
+    const structuredTargetId = c.req.param("structuredTargetId");
+    const target = await getStructuredTarget(structuredTargetId);
+    return success(c, "Structured target retrieved successfully.", target);
+  } catch (err) {
+    logger.error("Failed to get structured target", { error: err });
+    return error(c, `Failed to get structured target: ${err}`, 500);
   }
 });
 

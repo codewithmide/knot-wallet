@@ -148,18 +148,18 @@ export async function getMarket(ticker: string): Promise<Record<string, unknown>
 export async function listEvents(options?: {
   status?: "open" | "closed" | "settled";
   seriesTicker?: string;
-  category?: string;
+  withNestedMarkets?: boolean;
   limit?: number;
   cursor?: string;
 }): Promise<{ events: Record<string, unknown>[]; cursor?: string }> {
-  const { status, seriesTicker, category, limit = 20, cursor } = options || {};
+  const { status, seriesTicker, withNestedMarkets, limit = 20, cursor } = options || {};
 
-  logger.info("Fetching Kalshi events", { status, seriesTicker, category, limit });
+  logger.info("Fetching Kalshi events", { status, seriesTicker, withNestedMarkets, limit });
 
   const params = new URLSearchParams();
   if (status) params.append("status", status);
   if (seriesTicker) params.append("series_ticker", seriesTicker);
-  if (category) params.append("category", category);
+  if (withNestedMarkets !== undefined) params.append("with_nested_markets", withNestedMarkets.toString());
   if (limit) params.append("limit", limit.toString());
   if (cursor) params.append("cursor", cursor);
 
@@ -184,6 +184,155 @@ export async function getEvent(eventTicker: string): Promise<Record<string, unkn
   );
 
   return { ...response.event, markets: response.markets };
+}
+
+/**
+ * List all series.
+ * Returns raw Kalshi series data.
+ */
+export async function listSeries(options?: {
+  category?: string;
+  tags?: string;
+  includeProductMetadata?: boolean;
+  includeVolume?: boolean;
+  minUpdatedTs?: number;
+  limit?: number;
+  cursor?: string;
+}): Promise<{ series: Record<string, unknown>[]; cursor?: string }> {
+  const { category, tags, includeProductMetadata, includeVolume, minUpdatedTs, limit = 100, cursor } = options || {};
+
+  logger.info("Fetching Kalshi series", { category, tags, includeProductMetadata, includeVolume, minUpdatedTs, limit });
+
+  const params = new URLSearchParams();
+  if (category) params.append("category", category);
+  if (tags) params.append("tags", tags);
+  if (includeProductMetadata !== undefined) params.append("include_product_metadata", includeProductMetadata.toString());
+  if (includeVolume !== undefined) params.append("include_volume", includeVolume.toString());
+  if (minUpdatedTs !== undefined) params.append("min_updated_ts", minUpdatedTs.toString());
+  if (limit) params.append("limit", limit.toString());
+  if (cursor) params.append("cursor", cursor);
+
+  const queryString = params.toString();
+  const path = `/series${queryString ? `?${queryString}` : ""}`;
+
+  const response = await kalshiRequest<{ series: Record<string, unknown>[]; cursor?: string }>("GET", path);
+
+  return { series: response.series, cursor: response.cursor };
+}
+
+/**
+ * Get a specific series by ticker.
+ * Returns raw Kalshi series data.
+ */
+export async function getSeries(seriesTicker: string): Promise<Record<string, unknown>> {
+  logger.info("Fetching Kalshi series", { seriesTicker });
+
+  const response = await kalshiRequest<{ series: Record<string, unknown> }>(
+    "GET",
+    `/series/${seriesTicker}`
+  );
+
+  return response.series;
+}
+
+// ============================================================================
+// Milestones & Structured Targets
+// ============================================================================
+
+/**
+ * List milestones (upcoming games, matches, events).
+ * Returns raw Kalshi milestone data.
+ * Supports filtering by category (top-level e.g., "Sports", "Crypto") and competition (e.g., "Champions League").
+ */
+export async function listMilestones(options?: {
+  limit?: number;
+  minimumStartDate?: string;
+  category?: string;
+  competition?: string;
+  type?: string;
+  relatedEventTicker?: string;
+  cursor?: string;
+  minUpdatedTs?: number;
+}): Promise<{ milestones: Record<string, unknown>[]; cursor?: string }> {
+  const { limit = 100, minimumStartDate, category, competition, type, relatedEventTicker, cursor, minUpdatedTs } = options || {};
+
+  logger.info("Fetching Kalshi milestones", { category, competition, type, limit });
+
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", limit.toString());
+  if (minimumStartDate) params.append("minimum_start_date", minimumStartDate);
+  if (category) params.append("category", category);
+  if (competition) params.append("competition", competition);
+  if (type) params.append("type", type);
+  if (relatedEventTicker) params.append("related_event_ticker", relatedEventTicker);
+  if (cursor) params.append("cursor", cursor);
+  if (minUpdatedTs !== undefined) params.append("min_updated_ts", minUpdatedTs.toString());
+
+  const queryString = params.toString();
+  const path = `/milestones${queryString ? `?${queryString}` : ""}`;
+
+  const response = await kalshiRequest<{ milestones: Record<string, unknown>[]; cursor?: string }>("GET", path);
+
+  return { milestones: response.milestones, cursor: response.cursor };
+}
+
+/**
+ * Get a specific milestone by ID.
+ * Returns raw Kalshi milestone data.
+ */
+export async function getMilestone(milestoneId: string): Promise<Record<string, unknown>> {
+  logger.info("Fetching Kalshi milestone", { milestoneId });
+
+  const response = await kalshiRequest<{ milestone: Record<string, unknown> }>(
+    "GET",
+    `/milestones/${milestoneId}`
+  );
+
+  return response.milestone;
+}
+
+/**
+ * List structured targets.
+ * Returns raw Kalshi structured target data.
+ * Supports filtering by competition (e.g., "Champions League") and type.
+ */
+export async function listStructuredTargets(options?: {
+  type?: string;
+  competition?: string;
+  pageSize?: number;
+  cursor?: string;
+}): Promise<{ structuredTargets: Record<string, unknown>[]; cursor?: string }> {
+  const { type, competition, pageSize = 100, cursor } = options || {};
+
+  logger.info("Fetching Kalshi structured targets", { type, competition, pageSize });
+
+  const params = new URLSearchParams();
+  if (type) params.append("type", type);
+  if (competition) params.append("competition", competition);
+  if (pageSize) params.append("page_size", pageSize.toString());
+  if (cursor) params.append("cursor", cursor);
+
+  const queryString = params.toString();
+  const path = `/structured_targets${queryString ? `?${queryString}` : ""}`;
+
+  const response = await kalshiRequest<{ structured_targets: Record<string, unknown>[]; cursor?: string }>("GET", path);
+
+  return { structuredTargets: response.structured_targets, cursor: response.cursor };
+}
+
+/**
+ * Get a specific structured target by ID.
+ * Returns raw Kalshi structured target data.
+ */
+export async function getStructuredTarget(structuredTargetId: string): Promise<Record<string, unknown>> {
+  logger.info("Fetching Kalshi structured target", { structuredTargetId });
+
+  const response = await kalshiRequest<{ structured_target: Record<string, unknown> }>(
+    "GET",
+    `/structured_targets/${structuredTargetId}`
+  );
+
+  return response.structured_target;
 }
 
 // ============================================================================

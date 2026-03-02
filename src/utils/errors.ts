@@ -65,6 +65,13 @@ export class TradeError extends AppError {
   }
 }
 
+export class LiquidityError extends AppError {
+  constructor(message: string, statusCode: number = 400) {
+    super(message, statusCode, "LIQUIDITY_ERROR");
+    this.name = "LiquidityError";
+  }
+}
+
 export class DatabaseUnavailableError extends AppError {
   constructor(message: string = "Database temporarily unavailable") {
     super(message, 503, "DATABASE_UNAVAILABLE");

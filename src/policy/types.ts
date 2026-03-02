@@ -1,25 +1,19 @@
 export interface AgentPolicy {
-  maxSingleTransferSol: number;    // Max SOL per transaction
-  dailyLimitSol: number;           // Rolling 24h SOL limit
-  allowedRecipients: string[];     // Optional whitelist (empty = allow all)
-  allowTrading: boolean;           // Can the agent swap tokens?
-  allowLiquidity: boolean;         // Can the agent provide/remove liquidity?
-  allowedPools: string[];          // Optional pool whitelist (empty = allow all)
-  maxLiquidityPerPosition: number; // Max USD value per LP position
-  allowPredictionMarkets: boolean; // Can the agent trade on Kalshi?
-  maxPredictionOrderSize: number;  // Max contracts per prediction order
-  sessionExpirationHours: number;  // How long session tokens last (in hours)
+  maxSingleTransactionInUsd: number; // Max USD value per transaction (applies to all: transfers, trades, LP, predictions)
+  dailyLimitInUsd: number;           // Rolling 24h USD limit (all outbound operations)
+  allowedRecipients: string[];       // Optional whitelist for transfer recipients (empty = allow all)
+  allowTrading: boolean;             // Can the agent swap tokens?
+  allowLiquidityProvision: boolean;  // Can the agent provide/remove liquidity?
+  allowPredictionMarkets: boolean;   // Can the agent trade on Kalshi?
+  sessionExpirationHours: number;    // How long session tokens last (in hours)
 }
 
 export const DEFAULT_POLICY: AgentPolicy = {
-  maxSingleTransferSol: 1,
-  dailyLimitSol: 5,
-  allowedRecipients: [],           // empty = no whitelist, all allowed
+  maxSingleTransactionInUsd: 100,    // Max $100 per transaction
+  dailyLimitInUsd: 500,              // Max $500 per day across all operations
+  allowedRecipients: [],             // empty = no whitelist, all allowed
   allowTrading: true,
-  allowLiquidity: true,            // LP operations enabled by default
-  allowedPools: [],                // empty = no whitelist, all pools allowed
-  maxLiquidityPerPosition: 1000,   // Max $1000 per position
-  allowPredictionMarkets: true,    // Prediction markets enabled by default
-  maxPredictionOrderSize: 100,     // Max 100 contracts per order
-  sessionExpirationHours: 168,     // 7 days (168 hours)
+  allowLiquidityProvision: true,     // LP operations enabled by default
+  allowPredictionMarkets: true,      // Prediction markets enabled by default
+  sessionExpirationHours: 168,       // 7 days (168 hours)
 };

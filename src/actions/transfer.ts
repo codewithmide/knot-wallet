@@ -21,6 +21,7 @@ import { logger } from "../utils/logger.js";
 import { InsufficientFundsError } from "../utils/errors.js";
 import { createAuditLog } from "../utils/audit.js";
 import { config } from "../config.js";
+import { getTokenPriceUsd, computeUsdValue } from "../utils/pricing.js";
 
 // Fee configuration
 const FEE_PERCENTAGE = 0.01; // 1%
@@ -66,12 +67,22 @@ export async function transferSOL(
   const percentageFee = amountSol * FEE_PERCENTAGE;
   const totalFee = percentageFee + FLAT_FEE_SOL;
 
+  // Get SOL price in USD for policy check
+  const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
+  const solPriceUsd = await getTokenPriceUsd(NATIVE_SOL_MINT);
+  const usdValue = computeUsdValue(amountSol, solPriceUsd);
+
+  if (!usdValue) {
+    throw new Error("Unable to determine USD value for SOL transfer. Price data unavailable.");
+  }
+
   // Policy check BEFORE building any transaction
   await checkPolicy(agentId, {
     type: "transfer",
+    usdValue,
+    to: toAddress,
     asset: "sol",
     amount: amountSol,
-    to: toAddress,
   });
 
   const fromPubkey = new PublicKey(fromAddress);
@@ -174,16 +185,20 @@ export async function transferSOL(
     throw error;
   }
 
-  // Log successful transfer
+  // Log successful transfer with USD value
   const feeCollected = !!feeWalletPubkey && feeLamports > 0;
+  // const solPriceUsd = await getTokenPriceUsd("So11111111111111111111111111111111111111112");
+  const transferUsdValue = computeUsdValue(amountToRecipient, solPriceUsd);
+
   await createAuditLog({
     agentId,
-    action: "transfer",
+    action: "transfer_sol",
     asset: "sol",
     amount: amountToRecipient,
     to: toAddress,
     signature,
     status,
+    normalizedUsdAmount: transferUsdValue,
     metadata: {
       requestedAmount: amountSol,
       fee: totalFee,
@@ -191,6 +206,7 @@ export async function transferSOL(
       feeMode,
       feeCollected,
       feeWallet: feeCollected ? feeWalletPubkey.toBase58() : null,
+      usdValue: transferUsdValue ?? 0, // For daily limit calculation
     },
   });
 
@@ -244,12 +260,21 @@ export async function transferSPLToken(
   const percentageFee = amount * FEE_PERCENTAGE;
   const totalFee = percentageFee + FLAT_FEE_SPL;
 
+  // Get token price in USD for policy check
+  const tokenPriceUsd = await getTokenPriceUsd(mintAddress);
+  const usdValue = computeUsdValue(amount, tokenPriceUsd);
+
+  if (!usdValue) {
+    throw new Error("Unable to determine USD value for SPL token transfer. Price data unavailable.");
+  }
+
   // Policy check
   await checkPolicy(agentId, {
     type: "transfer",
+    usdValue,
+    to: toAddress,
     asset: "spl",
     amount,
-    to: toAddress,
     mint: mintAddress,
   });
 
@@ -460,15 +485,20 @@ export async function transferSPLToken(
     throw error;
   }
 
+  // Calculate USD value for the transfer
   const feeCollected = !!feeWalletPubkey && !!feeTokenAccount && rawFeeAmount > 0;
+  // const tokenPriceUsd = await getTokenPriceUsd(mintAddress);
+  const transferUsdValue = computeUsdValue(amountToRecipient, tokenPriceUsd);
+
   await createAuditLog({
     agentId,
-    action: "transfer",
+    action: "transfer_spl",
     asset: mintAddress,
     amount: amountToRecipient,
     to: toAddress,
     signature,
     status,
+    normalizedUsdAmount: transferUsdValue,
     metadata: {
       mint: mintAddress,
       decimals,
@@ -478,6 +508,7 @@ export async function transferSPLToken(
       feeMode,
       feeCollected,
       feeWallet: feeCollected ? feeWalletPubkey!.toBase58() : null,
+      usdValue: transferUsdValue ?? 0, // For daily limit calculation
     },
   });
 

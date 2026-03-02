@@ -6,8 +6,15 @@ import { success, error } from "../utils/response.js";
 import { createAuditLog } from "../utils/audit.js";
 import { computeUsdValue, getTokenPriceUsd } from "../utils/pricing.js";
 import { sendDepositNotification } from "../utils/email.js";
+import { resolveTokenMint } from "../utils/tokens.js";
+import { config } from "../config.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+
+// Minimum deposit amount to trigger an email notification
+// Filters out dust, fee remnants, and 0-amount transfers from swaps
+const MIN_SOL_FOR_EMAIL = 0.0001; // ~$0.01
+const MIN_TOKEN_FOR_EMAIL = 0.000001; // effectively > 0
 
 const webhooks = new Hono();
 
@@ -100,6 +107,12 @@ webhooks.post("/helius", async (c) => {
       // Aggregate deposits by agent
       const agentDepositsMap = new Map<string, AgentDeposits>();
 
+      // Collect all known agent addresses for self-transfer filtering
+      const knownAgentAddresses = new Set<string>();
+
+      // Also skip deposits from admin wallet (LP operations)
+      const adminAddress = config.KNOT_METEORA_ADMIN_WALLET_ADDRESS || "";
+
       // Process native SOL transfers
       for (const transfer of nativeTransfers) {
         const toAddress = transfer.toUserAccount;
@@ -109,11 +122,12 @@ webhooks.post("/helius", async (c) => {
         });
 
         if (agent) {
+          knownAgentAddresses.add(agent.solanaAddress);
           const solAmount = transfer.amount / 1e9;
           const priceUsd = await getTokenPriceUsd(SOL_MINT);
           const normalizedUsdAmount = computeUsdValue(solAmount, priceUsd);
 
-          // Log the deposit
+          // Log the deposit (always log for audit trail)
           await createAuditLog({
             agentId: agent.id,
             action: "deposit",
@@ -133,6 +147,20 @@ webhooks.post("/helius", async (c) => {
             },
           });
           depositsProcessed++;
+
+          // Skip email for zero/dust amounts, self-transfers, or admin wallet transfers
+          const isSelfTransfer = transfer.fromUserAccount === agent.solanaAddress;
+          const isAdminTransfer = transfer.fromUserAccount === adminAddress;
+          const isDust = solAmount < MIN_SOL_FOR_EMAIL;
+
+          if (isSelfTransfer || isAdminTransfer || isDust) {
+            logger.info("Skipping email for SOL transfer", {
+              reason: isSelfTransfer ? "self-transfer" : isAdminTransfer ? "admin-transfer" : "dust",
+              amount: solAmount,
+              from: transfer.fromUserAccount,
+            });
+            continue;
+          }
 
           // Aggregate for email notification
           if (!agentDepositsMap.has(agent.id)) {
@@ -173,9 +201,19 @@ webhooks.post("/helius", async (c) => {
         });
 
         if (agent) {
+          knownAgentAddresses.add(agent.solanaAddress);
           const tokenAmount = Number(transfer.tokenAmount);
           const priceUsd = await getTokenPriceUsd(transfer.mint);
           const normalizedUsdAmount = computeUsdValue(tokenAmount, priceUsd);
+
+          // Resolve token symbol from mint address (local directory → Jupiter API → Helius)
+          let tokenSymbol: string;
+          try {
+            const resolved = await resolveTokenMint(transfer.mint);
+            tokenSymbol = resolved.symbol;
+          } catch {
+            tokenSymbol = transfer.mint;
+          }
 
           await createAuditLog({
             agentId: agent.id,
@@ -191,12 +229,29 @@ webhooks.post("/helius", async (c) => {
               transactionType: tx.type,
               depositType: "spl",
               mint: transfer.mint,
+              symbol: tokenSymbol,
               rawAmount: transfer.tokenAmount.toString(),
               priceUsd,
               normalizedUsdAmount,
             },
           });
           depositsProcessed++;
+
+          // Skip email for zero/dust amounts, self-transfers, or admin wallet transfers
+          const isSelfTransfer = transfer.fromUserAccount === agent.solanaAddress;
+          const isAdminTransfer = transfer.fromUserAccount === adminAddress;
+          const isDust = tokenAmount < MIN_TOKEN_FOR_EMAIL;
+
+          if (isSelfTransfer || isAdminTransfer || isDust) {
+            logger.info("Skipping email for token transfer", {
+              reason: isSelfTransfer ? "self-transfer" : isAdminTransfer ? "admin-transfer" : "dust",
+              amount: tokenAmount,
+              mint: transfer.mint,
+              symbol: tokenSymbol,
+              from: transfer.fromUserAccount,
+            });
+            continue;
+          }
 
           // Aggregate for email notification
           if (!agentDepositsMap.has(agent.id)) {
@@ -212,7 +267,7 @@ webhooks.post("/helius", async (c) => {
           agentData.deposits.push({
             amount: tokenAmount,
             asset: transfer.mint,
-            assetName: transfer.mint, // Will be resolved in email function if needed
+            assetName: tokenSymbol,
             usdValue: normalizedUsdAmount,
             from: transfer.fromUserAccount,
           });
@@ -223,6 +278,7 @@ webhooks.post("/helius", async (c) => {
           logger.info("Token deposit logged", {
             agent: agent.email,
             mint: transfer.mint,
+            symbol: tokenSymbol,
             amount: tokenAmount,
           });
         }

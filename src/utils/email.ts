@@ -94,8 +94,9 @@ export async function sendDepositNotification(
   signature: string,
   _fromAddress?: string
 ): Promise<void> {
-  // Format asset name nicely
-  const assetName = asset === "sol" ? "SOL" : asset.toUpperCase();
+  // Asset should already be a resolved symbol (e.g. "SOL", "USDC", "TRUMP")
+  // Only uppercase if it's a short symbol, not a mint address
+  const assetName = asset.length <= 10 ? asset.toUpperCase() : asset.slice(0, 6) + "...";
 
   // Format amount with USD value if available
   const amountDisplay = usdValue
@@ -142,7 +143,6 @@ export async function sendDepositNotification(
                     <td>
                       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:16px;">
                         <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Amount:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${amountDisplay}</td></tr>
-                        <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Currency:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${assetName}</td></tr>
                         <tr><td style="font-size:15px;color:#404040;padding:4px 0;width:150px; padding:10px 0px;">Transaction ID:</td><td style="font-size:15px;color:#404040;padding:4px 0;text-align:right;">${signature}</td></tr>
                       </table>
                     </td>

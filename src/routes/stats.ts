@@ -84,13 +84,13 @@ stats.get("/", async (c) => {
 
     const statsCache = await ensureStatsCache();
 
-    // Calculate total trades as sum of ALL transaction types:
+    // Calculate total transactions as sum of ALL transaction types:
     // - Swaps (trades)
     // - Transfers (withdrawals)
     // - Deposits
     // - Liquidity operations (add, remove, claim rewards)
     // - Prediction market orders (buy/sell)
-    const totalTrades =
+    const totalTransactions =
       toNumber(statsCache.totalTrades) +           // swaps
       toNumber(statsCache.totalTransfers) +        // transfers/withdrawals
       toNumber(statsCache.totalDeposits) +         // deposits
@@ -99,9 +99,45 @@ stats.get("/", async (c) => {
       toNumber(statsCache.totalRewardsClaimed) +   // LP reward claims
       toNumber(statsCache.totalPredictionOrders);  // prediction buy/sell
 
+    // Calculate total volume in USD across all transaction types
+    const totalVolumeUsd =
+      toNumber(statsCache.totalTradeVolumeUsd) +
+      toNumber(statsCache.totalTransferVolumeUsd) +
+      toNumber(statsCache.totalDepositVolumeUsd) +
+      toNumber(statsCache.totalLiquidityVolumeUsd) +
+      toNumber(statsCache.totalPredictionVolumeUsd);
+
     return success(c, "Stats retrieved successfully.", {
       totalAgents: toNumber(statsCache.totalAgents),
-      totalTrades,
+      totalTrades: totalTransactions, // Kept for backwards compatibility
+      totalTransactions,
+      totalVolumeUsd: Number(totalVolumeUsd.toFixed(2)),
+      // Breakdown by category
+      volume: {
+        trades: {
+          count: toNumber(statsCache.totalTrades),
+          usd: Number(toNumber(statsCache.totalTradeVolumeUsd).toFixed(2)),
+        },
+        transfers: {
+          count: toNumber(statsCache.totalTransfers),
+          usd: Number(toNumber(statsCache.totalTransferVolumeUsd).toFixed(2)),
+        },
+        deposits: {
+          count: toNumber(statsCache.totalDeposits),
+          usd: Number(toNumber(statsCache.totalDepositVolumeUsd).toFixed(2)),
+        },
+        liquidity: {
+          adds: toNumber(statsCache.totalLiquidityAdds),
+          removes: toNumber(statsCache.totalLiquidityRemoves),
+          rewardsClaimed: toNumber(statsCache.totalRewardsClaimed),
+          usd: Number(toNumber(statsCache.totalLiquidityVolumeUsd).toFixed(2)),
+        },
+        predictions: {
+          orders: toNumber(statsCache.totalPredictionOrders),
+          contracts: toNumber(statsCache.totalPredictionVolume),
+          usd: Number(toNumber(statsCache.totalPredictionVolumeUsd).toFixed(2)),
+        },
+      },
     });
   } catch (err) {
     return error(c, "Unable to retrieve stats.", 500, { error: String(err) });

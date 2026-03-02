@@ -1,6 +1,7 @@
 import {
   Connection,
   VersionedTransaction,
+  Transaction,
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import { TurnkeySigner } from "@turnkey/solana";
@@ -78,20 +79,51 @@ export async function signAndBroadcast(
  * Use this for admin wallet operations (wallet in parent org, not a sub-org).
  *
  * Uses turnkeyClient (parent API keys) instead of turnkeyDelegatedClient.
+ * Supports both legacy Transaction and VersionedTransaction (for Meteora SDK compatibility).
+ *
+ * IMPORTANT: If the transaction already has signatures (e.g., from partialSign),
+ * we preserve the existing blockhash to avoid invalidating those signatures.
  */
 export async function signAndBroadcastAdmin(
-  transaction: VersionedTransaction,
+  transaction: VersionedTransaction | Transaction,
   signerAddress: string,
   network: "mainnet" | "devnet" = "mainnet"
 ): Promise<string> {
   const conn = network === "devnet" ? devnetConnection : connection;
 
-  // Set a fresh blockhash before signing
+  // Get a fresh blockhash
   const { blockhash, lastValidBlockHeight } =
     await conn.getLatestBlockhash("confirmed");
-  transaction.message.recentBlockhash = blockhash;
 
-  logger.debug("Signing admin transaction", { signerAddress, network });
+  // Handle both legacy Transaction and VersionedTransaction
+  const isVersioned = "message" in transaction && transaction.message !== undefined
+    && typeof transaction.message === "object" && "recentBlockhash" in transaction.message;
+
+  // Check if transaction already has signatures (e.g., from partialSign)
+  // If so, we should NOT overwrite the blockhash as it would invalidate existing signatures
+  let hasExistingSignatures = false;
+  if (!isVersioned) {
+    const legacyTx = transaction as Transaction;
+    hasExistingSignatures = legacyTx.signatures.some(
+      sig => sig.signature !== null && sig.signature.length > 0
+    );
+  } else {
+    const versionedTx = transaction as VersionedTransaction;
+    hasExistingSignatures = versionedTx.signatures.some(
+      sig => sig.some(byte => byte !== 0)
+    );
+  }
+
+  if (!hasExistingSignatures) {
+    // Only set blockhash if no existing signatures
+    if (isVersioned) {
+      (transaction as VersionedTransaction).message.recentBlockhash = blockhash;
+    } else {
+      (transaction as Transaction).recentBlockhash = blockhash;
+    }
+  }
+
+  logger.debug("Signing admin transaction", { signerAddress, network, isVersioned, hasExistingSignatures });
 
   // Use parent org client for admin wallet
   const turnkeySigner = new TurnkeySigner({

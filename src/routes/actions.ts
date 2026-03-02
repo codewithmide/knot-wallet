@@ -9,9 +9,11 @@ import {
   listPools,
   getPoolInfo,
   getAgentPositions,
+  getPositionDetails,
   addLiquidity,
   removeLiquidity,
   claimRewards,
+  retryPendingWithdrawal,
   isMeteoraAdminConfigured,
 } from "../services/liquidity.js";
 import { db } from "../db/prisma.js";
@@ -127,6 +129,116 @@ actions.post(
   }
 );
 
+// POST /wallets/me/actions/unwrap-sol
+// Unwrap wSOL back to native SOL (closes wSOL token account)
+actions.post(
+  "/actions/unwrap-sol",
+  zValidator(
+    "json",
+    z.object({
+      amount: z.number().positive().optional(), // Optional: unwrap specific amount, default = all
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const { amount } = c.req.valid("json");
+
+    const {
+      PublicKey,
+      VersionedTransaction,
+      TransactionMessage,
+      LAMPORTS_PER_SOL,
+    } = await import("@solana/web3.js");
+    const {
+      getAssociatedTokenAddress,
+      createCloseAccountInstruction,
+      getAccount,
+      NATIVE_MINT,
+      TOKEN_PROGRAM_ID,
+    } = await import("@solana/spl-token");
+    const { connection, signAndBroadcast } = await import("../turnkey/signer.js");
+
+    const userPubkey = new PublicKey(agent.solanaAddress);
+    const wsolAccount = await getAssociatedTokenAddress(
+      NATIVE_MINT,
+      userPubkey,
+      false,
+      TOKEN_PROGRAM_ID
+    );
+
+    // Check if wSOL account exists
+    let accountInfo;
+    try {
+      accountInfo = await getAccount(connection, wsolAccount, undefined, TOKEN_PROGRAM_ID);
+    } catch (err) {
+      return error(c, "No wSOL account found. You don't have any wrapped SOL to unwrap.", 400);
+    }
+
+    const wsolBalance = Number(accountInfo.amount) / LAMPORTS_PER_SOL;
+
+    if (wsolBalance === 0) {
+      return error(c, "wSOL balance is zero. Nothing to unwrap.", 400);
+    }
+
+    // If amount specified, validate it
+    if (amount !== undefined && amount > wsolBalance) {
+      return error(
+        c,
+        `Insufficient wSOL balance. Have ${wsolBalance} wSOL, requested ${amount} wSOL.`,
+        400
+      );
+    }
+
+    const unwrapAmount = amount ?? wsolBalance;
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    const instructions = [];
+
+    // Close wSOL account - unwraps to native SOL
+    instructions.push(
+      createCloseAccountInstruction(
+        wsolAccount,
+        userPubkey,      // destination for unwrapped SOL
+        userPubkey,      // account owner
+        [],
+        TOKEN_PROGRAM_ID
+      )
+    );
+
+    const message = new TransactionMessage({
+      payerKey: userPubkey,
+      recentBlockhash: blockhash,
+      instructions,
+    }).compileToV0Message();
+
+    const transaction = new VersionedTransaction(message);
+    const signature = await signAndBroadcast(
+      transaction,
+      agent.solanaAddress,
+      agent.turnkeySubOrgId
+    );
+
+    await createAuditLog({
+      agentId: agent.id,
+      action: "unwrap_sol",
+      asset: "SOL",
+      amount: unwrapAmount,
+      signature,
+      status: "confirmed",
+      metadata: {
+        wsolAmount: unwrapAmount,
+        unwrappedToNativeSol: true,
+      },
+    });
+
+    return success(c, `Successfully unwrapped ${unwrapAmount} wSOL to native SOL.`, {
+      signature,
+      amount: unwrapAmount,
+      explorerUrl: `https://solscan.io/tx/${signature}`,
+    });
+  }
+);
+
 // POST /wallets/me/actions/trade
 actions.post(
   "/actions/trade",
@@ -194,19 +306,48 @@ actions.get("/positions", async (c) => {
   return success(c, "Positions retrieved successfully.", { positions });
 });
 
+// GET /wallets/me/positions/:positionId
+// Get detailed position info including on-chain data and pending rewards
+// Use this to check if there are rewards to claim
+actions.get("/positions/:positionId", async (c) => {
+  const agent = c.get("agent");
+  const positionId = c.req.param("positionId");
+
+  if (!isMeteoraAdminConfigured()) {
+    return error(c, "Liquidity provision is not configured", 503);
+  }
+
+  try {
+    const details = await getPositionDetails(agent.id, positionId);
+    return success(c, "Position details retrieved successfully.", details);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("not found")) {
+      return error(c, err.message, 404);
+    }
+    throw err;
+  }
+});
+
 // POST /wallets/me/actions/add-liquidity
 // Add liquidity to a DLMM pool (custodial: agent transfers tokens to admin, admin provides liquidity)
+// Supports one-sided liquidity:
+//   - amountX > 0, amountY = 0: One-sided X (bins above active price, selling X at higher prices)
+//   - amountX = 0, amountY > 0: One-sided Y (bins below active price, buying X at lower prices)
+//   - Both positive: Two-sided liquidity around active price
 actions.post(
   "/actions/add-liquidity",
   zValidator(
     "json",
     z.object({
       pool: z.string().min(32).max(44),
-      amountX: z.number().positive(),
-      amountY: z.number().positive().optional(),
+      amountX: z.number().nonnegative(), // Allow 0 for one-sided Y
+      amountY: z.number().nonnegative().optional(), // Allow 0 for one-sided X
       strategy: z.enum(["spot", "curve", "bidAsk"]).default("spot"),
       rangeWidth: z.number().int().min(1).max(100).default(10),
-    })
+    }).refine(
+      (data) => data.amountX > 0 || (data.amountY !== undefined && data.amountY > 0),
+      { message: "At least one of amountX or amountY must be positive" }
+    )
   ),
   async (c) => {
     const agent = c.get("agent");
@@ -227,7 +368,18 @@ actions.post(
       rangeWidth
     );
 
-    return success(c, "Liquidity added successfully. A 1% entry fee applies.", result);
+    // Customize message based on liquidity type
+    const isOneSidedX = amountX > 0 && amountY === 0;
+    const isOneSidedY = amountX === 0 && amountY !== undefined && amountY > 0;
+    const feeMsg = `A ${result.entryFeeBps / 100}% + $${result.flatFeeUsd.toFixed(2)} entry fee was charged (total: $${result.totalFeeUsd.toFixed(2)}).`;
+    let message = `Liquidity added successfully. ${feeMsg}`;
+    if (isOneSidedX) {
+      message = `One-sided liquidity (X only) added successfully. Bins are above active price. ${feeMsg}`;
+    } else if (isOneSidedY) {
+      message = `One-sided liquidity (Y only) added successfully. Bins are below active price. ${feeMsg}`;
+    }
+
+    return success(c, message, result);
   }
 );
 
@@ -286,6 +438,38 @@ actions.post(
     );
 
     return success(c, "Rewards claimed successfully. A 1% platform fee was deducted.", result);
+  }
+);
+
+// POST /wallets/me/actions/retry-withdrawal
+// Retry withdrawal for a position that was removed on-chain but transfer failed
+actions.post(
+  "/actions/retry-withdrawal",
+  zValidator(
+    "json",
+    z.object({
+      positionId: z.string().uuid(), // Database position ID
+    })
+  ),
+  async (c) => {
+    const agent = c.get("agent");
+    const { positionId } = c.req.valid("json");
+
+    if (!isMeteoraAdminConfigured()) {
+      return error(c, "Liquidity provision is not configured", 503);
+    }
+
+    const result = await retryPendingWithdrawal(
+      agent.id,
+      agent.solanaAddress,
+      positionId
+    );
+
+    return success(
+      c,
+      "Withdrawal completed successfully. Your funds have been transferred.",
+      result
+    );
   }
 );
 

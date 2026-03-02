@@ -22,16 +22,7 @@ export const config = cleanEnv(process.env, {
 
   // Jupiter
   JUPITER_API_KEY: str(),
-  // Jupiter Referral Program - for collecting swap fees
-  // Create referral account at: https://referral.jup.ag/
-  //
-  // TIERED FEE STRUCTURE (Jupiter takes 20%, so net = bps × 0.8):
-  //   < $6.25:    255 bps (2.55%) → nets 2.04%, breakeven at ~$4.90
-  //   $6.25-$12.50: 200 bps (2%)  → nets 1.60%, breakeven at ~$6.25
-  //   ≥ $12.50:    100 bps (1%)  → nets 0.80%, breakeven at ~$12.50
-  //
-  // Fee tiers are calculated dynamically based on estimated trade USD value.
-  // Covers $0.10 Turnkey signing cost at all tiers except trades < ~$5.
+
   JUPITER_REFERRAL_ACCOUNT: str({ default: "" }),  // Referral account public key
 
   // Kalshi Prediction Markets
@@ -41,17 +32,17 @@ export const config = cleanEnv(process.env, {
 
   // Kalshi Admin Wallet (for custodial prediction market funds)
   // This wallet holds all agent prediction funds - address is NOT exposed to agents
-  KNOT_KALSHI_ADMIN_KEY_ID: str({ default: "" }),  // Turnkey sub-org ID for admin wallet
-  KNOT_KALSHI_ADMIN_WALLET_ADDRESS: str({ default: "" }),  // Solana address of admin wallet
+  KNOT_KALSHI_ADMIN_KEY_ID: str({ default: "" }), 
+  KNOT_KALSHI_ADMIN_WALLET_ADDRESS: str({ default: "" }),
 
   // Meteora Admin Wallet (for custodial liquidity provision)
   // This wallet provides liquidity on behalf of agents - address is NOT exposed to agents
-  KNOT_METEORA_ADMIN_KEY_ID: str({ default: "" }),  // Turnkey sub-org ID for admin wallet
-  KNOT_METEORA_ADMIN_WALLET_ADDRESS: str({ default: "" }),  // Solana address of admin wallet
+  KNOT_METEORA_ADMIN_KEY_ID: str({ default: "" }),
+  KNOT_METEORA_ADMIN_WALLET_ADDRESS: str({ default: "" }),
 
   // Fee Collection Wallet (receives platform fees from transfers/trades)
   // This is where 1% + flat fee goes for all non-custodial transactions
-  KNOT_FEE_WALLET_ADDRESS: str({ default: "" }),  // Solana address for fee collection
+  KNOT_FEE_WALLET_ADDRESS: str({ default: "" }),
 
   // Stats (private endpoint)
   STATS_API_SECRET: str(),

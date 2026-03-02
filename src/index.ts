@@ -66,6 +66,33 @@ app.onError((err, c) => {
     return error(c, "Validation error.", 400, { details: err });
   }
 
+  // Network/RPC errors from Solana
+  if (
+    err.message?.includes("fetch failed") ||
+    err.message?.includes("ECONNREFUSED") ||
+    err.message?.includes("ETIMEDOUT") ||
+    err.message?.includes("ENOTFOUND") ||
+    err.message?.includes("network request failed") ||
+    err.stack?.includes("@solana/web3.js/src/connection")
+  ) {
+    return error(
+      c,
+      "Failed to connect to Solana network. This is usually a temporary issue. Please retry your request.",
+      503,
+      { code: "RPC_CONNECTION_ERROR" }
+    );
+  }
+
+  // Rate limiting
+  if (err.message?.includes("429") || err.message?.includes("Too Many Requests")) {
+    return error(
+      c,
+      "Rate limit exceeded. Please wait a moment and try again.",
+      429,
+      { code: "RATE_LIMIT_ERROR" }
+    );
+  }
+
   return error(c, "Internal server error.", 500);
 });
 
