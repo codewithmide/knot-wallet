@@ -103,11 +103,13 @@ export async function listPools(options?: {
   logger.info("Fetching DLMM pools from Meteora", { tokenX, tokenY, limit });
 
   try {
-    // Use paginated endpoint to avoid OOM from fetching all 70k+ pools
+    // Use paginated endpoint to avoid OOM from fetching all 70k+ pools.
+    // The API paginates by *groups* (token pair names), not individual pools.
     const searchTerm = [tokenX, tokenY].filter(Boolean).join("-") || undefined;
+    const groupLimit = searchTerm ? 50 : Math.min(Math.ceil(limit / 2), 100);
     const params = new URLSearchParams({
       page: "0",
-      limit: String(limit),
+      limit: String(groupLimit),
     });
     if (searchTerm) params.set("search_term", searchTerm);
 
@@ -124,7 +126,7 @@ export async function listPools(options?: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let pools: any[] = data.groups.flatMap((g) => g.pairs);
 
-    // Sort by liquidity (descending) and limit
+    // Sort by liquidity (descending) and slice to the requested limit
     pools = pools
       .sort((a, b) => parseFloat(b.liquidity || "0") - parseFloat(a.liquidity || "0"))
       .slice(0, limit);
