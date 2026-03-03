@@ -53,26 +53,30 @@ async function estimateTradeUsdValue(
     return amount;
   }
 
-  // SOL: fetch price from Jupiter
-  if (inputMint === WSOL_MINT) {
-    try {
-      const priceResponse = await fetch(
-        `https://api.jup.ag/price/v3?ids=${WSOL_MINT}`,
-        { headers: { "x-api-key": config.JUPITER_API_KEY } }
-      ).then((r) => r.json());
+  // Fetch price from Jupiter Price API for SOL and any other token
+  try {
+    const priceResponse = await fetch(
+      `https://api.jup.ag/price/v3?ids=${inputMint}`,
+      { headers: { "x-api-key": config.JUPITER_API_KEY } }
+    ).then((r) => r.json());
 
-      const solPrice = priceResponse?.data?.[WSOL_MINT]?.usdPrice;
-      if (solPrice && typeof solPrice === "number") {
-        return amount * solPrice;
-      }
-    } catch (error) {
-      logger.warn("Failed to fetch SOL price for fee calculation", { error: String(error) });
+    const tokenPrice = priceResponse?.data?.[inputMint]?.usdPrice;
+    if (tokenPrice && typeof tokenPrice === "number") {
+      return amount * tokenPrice;
     }
-    // Fallback: assume ~$150 SOL (conservative estimate, will use higher fee tier)
+  } catch (error) {
+    logger.warn("Failed to fetch token price for fee calculation", {
+      inputMint,
+      error: String(error),
+    });
+  }
+
+  // SOL fallback: assume ~$150 (conservative, triggers higher fee tier)
+  if (inputMint === WSOL_MINT) {
     return amount * 150;
   }
 
-  // Unknown token: return null to trigger max fee
+  // Unknown token with no price data: return null to trigger max fee
   return null;
 }
 
@@ -146,14 +150,17 @@ export async function trade(
   // Calculate tiered fee based on estimated USD value
   const estimatedUsdValue = await estimateTradeUsdValue(inputMint, amount);
 
-  if (!estimatedUsdValue) {
-    throw new TradeError("Unable to determine USD value for trade. Price data unavailable.");
+  if (estimatedUsdValue === null) {
+    logger.warn("Could not determine USD value for trade — using max fee tier", {
+      inputMint,
+      amount,
+    });
   }
 
   // Policy check BEFORE making any Jupiter API calls
   await checkPolicy(agentId, {
     type: "trade",
-    usdValue: estimatedUsdValue,
+    usdValue: estimatedUsdValue ?? 0,
     fromMint: inputMint,
     toMint: outputMint,
     amount,

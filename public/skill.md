@@ -17,6 +17,8 @@ Knot is a server-side Solana wallet built for AI agents. Private keys are secure
 
 **Base URL:** `https://api.useknot.xyz`
 
+**Documentation:** [docs.useknot.xyz](https://docs.useknot.xyz/)
+
 **What you can do:**
 - Hold and transfer SOL and any SPL token
 - Swap tokens via Jupiter aggregator

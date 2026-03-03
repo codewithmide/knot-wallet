@@ -65,7 +65,8 @@ Agent  →  POST /wallets/me/actions/trade
 | **Rate limiting** | In-memory sliding window — global, per-IP, per-agent, and OTP-specific |
 | **Idempotency** | Optional deduplication on financial mutations via `Idempotency-Key` header |
 | **Audit trail** | Every action logged with USD-normalised amounts |
-| **skill.md** | Machine-readable API documentation served at `GET /skill.md` |
+| **skill.md** | Machine-readable API documentation — [api.useknot.xyz/skill.md](https://api.useknot.xyz/skill.md) |
+| **Website** | [useknot.xyz](https://www.useknot.xyz/) |
 | **Graceful shutdown** | Clean SIGTERM/SIGINT handling with DB disconnect |
 | **OTP cleanup** | Automatic periodic purge of expired OTP codes |
 

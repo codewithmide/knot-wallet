@@ -315,7 +315,7 @@ export async function transferSPLToken(
   const toTokenAccount = await getAssociatedTokenAddress(
     mintPubkey,
     toPubkey,
-    false,
+    true, // Allow PDA owners (off-curve addresses)
     tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
